@@ -509,6 +509,13 @@ public class PurchaseService {
             );
         }
 
-        return mapToSummary(pr);
+        // Return minimal safe DTO — frontend ignores this value and calls load() instead
+        PurchaseRequestSummaryDTO result = new PurchaseRequestSummaryDTO();
+        result.setId(pr.getId());
+        result.setStatus(pr.getStatus());
+        result.setDepartment(pr.getDepartment());
+        result.setReceivedDate(pr.getReceivedDate());
+        result.setItems(java.util.Collections.emptyList());
+        return result;
     }
 }

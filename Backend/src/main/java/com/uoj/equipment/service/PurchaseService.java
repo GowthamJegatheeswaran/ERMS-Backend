@@ -45,6 +45,7 @@ public class PurchaseService {
 
     private HodPurchaseRequestDTO mapToHodDto(PurchaseRequest pr) {
         var itemDtos = pr.getItems().stream()
+                .filter(pi -> pi.getEquipment() != null)
                 .map(pi -> new HodPurchaseItemDTO(
                         pi.getEquipment().getId(),
                         pi.getEquipment().getName(),
@@ -78,8 +79,12 @@ public class PurchaseService {
             dto.setRequestedByName(pr.getToUser().getFullName());
             dto.setRequestedByEmail(pr.getToUser().getEmail());
         }
+        if (pr.getHodUser() != null) {
+            dto.setHodName(pr.getHodUser().getFullName());
+        }
 
         List<PurchaseRequestSummaryDTO.ItemLine> itemDtos = pr.getItems().stream()
+                .filter(i -> i.getEquipment() != null)
                 .map(i -> new PurchaseRequestSummaryDTO.ItemLine(
                         i.getEquipment().getName(),
                         i.getQuantityRequested()
@@ -193,6 +198,7 @@ public class PurchaseService {
 
         List<PurchaseRequestSummaryDTO.ItemLine> itemLines =
                 purchaseItemRepository.findByPurchaseRequestId(saved.getId()).stream()
+                        .filter(pi -> pi.getEquipment() != null)
                         .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(
                                 pi.getEquipment().getName(), pi.getQuantityRequested()))
                         .toList();
@@ -218,7 +224,7 @@ public class PurchaseService {
 
         PurchaseRequest pr = purchaseRequestRepository.findById(purchaseRequestId)
                 .orElseThrow(() -> new IllegalArgumentException("Purchase request not found"));
-        if (!hodUser.getId().equals(pr.getHodUser().getId()))
+        if (pr.getHodUser() != null && !hodUser.getId().equals(pr.getHodUser().getId()))
             throw new IllegalArgumentException("This purchase request does not belong to this HOD");
         if (pr.getStatus() != PurchaseStatus.SUBMITTED_TO_HOD)
             throw new IllegalArgumentException("Purchase request is not in SUBMITTED_TO_HOD state");
@@ -231,6 +237,7 @@ public class PurchaseService {
         // Build items summary for notification
         List<PurchaseItem> purchaseItems = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
         String itemsSummary = purchaseItems.stream()
+                .filter(pi -> pi.getEquipment() != null)
                 .map(pi -> pi.getEquipment().getName() + " ×" + pi.getQuantityRequested())
                 .reduce((a, b) -> a + ", " + b).orElse("—");
 
@@ -283,6 +290,7 @@ public class PurchaseService {
         }
 
         List<PurchaseRequestSummaryDTO.ItemLine> itemLines = purchaseItems.stream()
+                .filter(pi -> pi.getEquipment() != null)
                 .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(
                         pi.getEquipment().getName(), pi.getQuantityRequested()))
                 .toList();
@@ -320,6 +328,7 @@ public class PurchaseService {
 
         List<PurchaseItem> purchaseItems = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
         String itemsSummary = purchaseItems.stream()
+                .filter(pi -> pi.getEquipment() != null)
                 .map(pi -> pi.getEquipment().getName() + " ×" + pi.getQuantityRequested())
                 .reduce((a, b) -> a + ", " + b).orElse("—");
 
@@ -332,7 +341,7 @@ public class PurchaseService {
             String issuedDateStr = effectiveIssuedDate.toString();
 
             // ── Notify HOD: Admin issued purchase, please confirm receipt ──
-            notificationService.notifyUser(
+            if (hodUser != null) notificationService.notifyUser(
                     hodUser,
                     NotificationType.PURCHASE_APPROVED_BY_ADMIN,
                     "Purchase Request Issued — Please Confirm Receipt",
@@ -360,7 +369,7 @@ public class PurchaseService {
             purchaseRequestRepository.save(pr);
 
             // ── Notify HOD: Admin rejected ─────────────────────────────────
-            notificationService.notifyUser(
+            if (hodUser != null) notificationService.notifyUser(
                     hodUser,
                     NotificationType.PURCHASE_REJECTED_BY_ADMIN,
                     "Purchase Request Rejected by Admin",
@@ -385,6 +394,7 @@ public class PurchaseService {
         }
 
         List<PurchaseRequestSummaryDTO.ItemLine> itemLines = purchaseItems.stream()
+                .filter(pi -> pi.getEquipment() != null)
                 .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(
                         pi.getEquipment().getName(), pi.getQuantityRequested()))
                 .toList();
@@ -392,7 +402,9 @@ public class PurchaseService {
         return new PurchaseRequestSummaryDTO(
                 "", pr.getId(), pr.getDepartment(), pr.getStatus(),
                 pr.getReason(), pr.getCreatedDate(),
-                pr.getToUser().getFullName(), hodUser.getFullName(), itemLines
+                toUser != null ? toUser.getFullName() : "—",
+                hodUser != null ? hodUser.getFullName() : "—",
+                itemLines
         );
     }
 

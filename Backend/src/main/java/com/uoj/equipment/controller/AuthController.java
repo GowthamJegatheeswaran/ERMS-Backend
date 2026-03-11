@@ -1,17 +1,21 @@
 package com.uoj.equipment.controller;
+
 import com.uoj.equipment.dto.*;
 import com.uoj.equipment.entity.User;
 import com.uoj.equipment.enums.Role;
 import com.uoj.equipment.repository.UserRepository;
 import com.uoj.equipment.config.JwtUtil;
+import com.uoj.equipment.service.EmailVerificationService;
 import com.uoj.equipment.service.PasswordResetService;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -22,52 +26,69 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final JwtUtil jwtUtil;
     private final PasswordResetService passwordResetService;
+    private final EmailVerificationService emailVerificationService;
 
     public AuthController(UserRepository userRepository,
                           PasswordEncoder passwordEncoder,
                           AuthenticationManager authenticationManager,
-                          JwtUtil jwtUtil,PasswordResetService passwordResetService) {
-        this.passwordResetService = passwordResetService;
+                          JwtUtil jwtUtil,
+                          PasswordResetService passwordResetService,
+                          EmailVerificationService emailVerificationService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
         this.jwtUtil = jwtUtil;
+        this.passwordResetService = passwordResetService;
+        this.emailVerificationService = emailVerificationService;
     }
 
-
-    // Login
+    // ── LOGIN ─────────────────────────────────────────────────────────────────
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginDTO dto) {
         try {
-            // 1) Authenticate credentials
-            UsernamePasswordAuthenticationToken authToken =
-                    new UsernamePasswordAuthenticationToken(dto.getEmail(), dto.getPassword());
-            authenticationManager.authenticate(authToken);
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(dto.getEmail(), dto.getPassword()));
 
-            // 2) Load user from DB
             User user = userRepository.findByEmail(dto.getEmail())
                     .orElseThrow(() -> new IllegalArgumentException("Invalid email or password"));
 
-            // 3) Generate JWT token
+            // Block login if email not verified (only for STUDENT/STAFF self-registered accounts)
+            // Admin-created users have emailVerified = true by default
+            if (!user.isEmailVerified()) {
+                return ResponseEntity.status(403).body(Map.of(
+                        "error", "EMAIL_NOT_VERIFIED",
+                        "message", "Please verify your email address before logging in. " +
+                                   "Check your inbox for the verification link.",
+                        "email", user.getEmail()
+                ));
+            }
+
+            if (!user.isEnabled()) {
+                return ResponseEntity.status(403).body(Map.of(
+                        "error", "ACCOUNT_DISABLED",
+                        "message", "Your account has been disabled. Please contact the administrator."
+                ));
+            }
+
             String token = jwtUtil.generateToken(user.getEmail());
 
-            // 4) Build response
             LoginResponseDTO resp = new LoginResponseDTO(
                     "Login successful",
                     token,
                     user.getEmail(),
                     user.getRole().name()
-
             );
-
             return ResponseEntity.ok(resp);
 
         } catch (BadCredentialsException ex) {
-            return ResponseEntity.status(401).body("Invalid email or password");
+            return ResponseEntity.status(401).body(Map.of(
+                    "error", "BAD_CREDENTIALS",
+                    "message", "Invalid email or password"
+            ));
         }
     }
 
-    // Logged-in user profile (frontend uses this to filter labs/equipment by department)
+    // ── PROFILE ───────────────────────────────────────────────────────────────
     @GetMapping("/me")
     public ResponseEntity<?> me(Authentication auth) {
         User user = userRepository.findByEmail(auth.getName()).orElse(null);
@@ -79,69 +100,50 @@ public class AuthController {
                 user.getEmail(),
                 user.getRegNo(),
                 user.getDepartment(),
-                user.getRole().name()
+                user.getRole().name(),
+                user.isEnabled()
         ));
     }
 
-
-    // Signup
+    // ── STUDENT SIGNUP ────────────────────────────────────────────────────────
     @PostMapping("/signup")
-    public ResponseEntity<String> signup(@RequestBody SignupRequestDTO dto) {
-
+    public ResponseEntity<?> signup(@RequestBody SignupRequestDTO dto) {
 
         if (dto.getFullName() == null || dto.getFullName().isBlank())
             return ResponseEntity.badRequest().body("Full name is required");
-
         if (dto.getEmail() == null || dto.getEmail().isBlank())
             return ResponseEntity.badRequest().body("Email is required");
-
         if (dto.getRegNo() == null || dto.getRegNo().isBlank())
             return ResponseEntity.badRequest().body("Register number is required");
-
         if (dto.getDepartment() == null || dto.getDepartment().isBlank())
             return ResponseEntity.badRequest().body("Department is required");
-
         if (dto.getPassword() == null || dto.getPassword().isBlank())
             return ResponseEntity.badRequest().body("Password is required");
 
-
-        // Unique constraints
         if (userRepository.existsByEmail(dto.getEmail()))
             return ResponseEntity.badRequest().body("Email already exists");
-
         if (userRepository.existsByRegNo(dto.getRegNo()))
             return ResponseEntity.badRequest().body("Register number already exists");
 
-
-        //Reg no format check -> 2022/E/063
+        // Reg no format: 2022/E/063
         String regNoRegex = "^20[0-9]{2}/E/[0-9]{3}$";
-        if (!dto.getRegNo().matches(regNoRegex)) {
+        if (!dto.getRegNo().matches(regNoRegex))
             return ResponseEntity.badRequest().body("Invalid register number. Use format: 2022/E/063");
-        }
 
-        // Email format check -> 2022e063@eng.jfn.ac.lk
+        // Email format: 2022e063@eng.jfn.ac.lk
         String emailRegex = "^20[0-9]{2}e[0-9]{3}@eng\\.jfn\\.ac\\.lk$";
-        if (!dto.getEmail().matches(emailRegex)) {
+        if (!dto.getEmail().matches(emailRegex))
             return ResponseEntity.badRequest().body("Invalid student email. Use format: 2022e063@eng.jfn.ac.lk");
-        }
 
-        // Email match reg no (2022/E/063 -> 2022e063)
+        // Email must match reg number
         String regNoClean = dto.getRegNo().replace("/", ""); // 2022E063
-        // Build expected email prefix: 2022e063
-        String expectedEmailPrefix =
-                regNoClean.substring(0, 4) + "e" + regNoClean.substring(5);
-
-        // Actual email prefix (before @)
+        String expectedEmailPrefix = regNoClean.substring(0, 4) + "e" + regNoClean.substring(5);
         String actualEmailPrefix = dto.getEmail().split("@")[0];
-
-        if (!expectedEmailPrefix.equalsIgnoreCase(actualEmailPrefix)) {
+        if (!expectedEmailPrefix.equalsIgnoreCase(actualEmailPrefix))
             return ResponseEntity.badRequest().body(
-                    "Email does not match register number. Expected email prefix: " + expectedEmailPrefix
-                            + "@eng.jfn.ac.lk"
-            );
-        }
+                    "Email does not match register number. Expected: " + expectedEmailPrefix + "@eng.jfn.ac.lk");
 
-        // FORCE ROLE = STUDENT (ignore dto.getRole())
+        // Create user — NOT verified yet
         User user = new User();
         user.setFullName(dto.getFullName());
         user.setEmail(dto.getEmail());
@@ -150,36 +152,68 @@ public class AuthController {
         user.setPasswordHash(passwordEncoder.encode(dto.getPassword()));
         user.setRole(Role.STUDENT);
         user.setEnabled(true);
-
+        user.setEmailVerified(false); // must verify before login
         userRepository.save(user);
 
-        return ResponseEntity.ok("Student signup successful");
-    }
-
-    @PostMapping("/forgot-password")
-    public ResponseEntity<?> forgotPassword(@RequestBody ForgotPasswordRequestDTO dto) {
-        if (dto.getEmail() == null || dto.getEmail().isBlank()) {
-            return ResponseEntity.badRequest().body("Email is required");
+        // Send verification email
+        try {
+            emailVerificationService.sendVerificationEmail(user);
+        } catch (Exception e) {
+            // Don't fail the signup if email delivery fails — user can resend
+            System.err.println("[AuthController] Verification email failed: " + e.getMessage());
         }
 
-        passwordResetService.createResetTokenForEmail(dto.getEmail().trim());
+        return ResponseEntity.ok(Map.of(
+                "message", "Registration successful! Please check your email (" + dto.getEmail() + ") " +
+                           "and click the verification link to activate your account.",
+                "email", dto.getEmail()
+        ));
+    }
 
-        return ResponseEntity.ok("If this email exists, a reset link has been sent.");
+    // ── EMAIL VERIFICATION ────────────────────────────────────────────────────
+    @GetMapping("/verify-email")
+    public ResponseEntity<?> verifyEmail(@RequestParam String token) {
+        try {
+            User user = emailVerificationService.verifyToken(token);
+            return ResponseEntity.ok(Map.of(
+                    "message", "Email verified successfully! You can now log in.",
+                    "email", user.getEmail()
+            ));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // ── RESEND VERIFICATION ───────────────────────────────────────────────────
+    @PostMapping("/resend-verification")
+    public ResponseEntity<?> resendVerification(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        if (email == null || email.isBlank())
+            return ResponseEntity.badRequest().body("Email is required");
+        try {
+            emailVerificationService.resendVerificationEmail(email.trim());
+            return ResponseEntity.ok(Map.of("message", "Verification email resent. Please check your inbox."));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // ── FORGOT / RESET PASSWORD ───────────────────────────────────────────────
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(@RequestBody ForgotPasswordRequestDTO dto) {
+        if (dto.getEmail() == null || dto.getEmail().isBlank())
+            return ResponseEntity.badRequest().body("Email is required");
+        passwordResetService.createResetTokenForEmail(dto.getEmail().trim());
+        return ResponseEntity.ok(Map.of("message", "If this email exists, a reset link has been sent."));
     }
 
     @PostMapping("/reset-password")
     public ResponseEntity<?> resetPassword(@RequestBody ResetPasswordDTO dto) {
-        if (dto.getToken() == null || dto.getToken().isBlank()) {
+        if (dto.getToken() == null || dto.getToken().isBlank())
             return ResponseEntity.badRequest().body("Token is required");
-        }
-        if (dto.getNewPassword() == null || dto.getNewPassword().isBlank()) {
+        if (dto.getNewPassword() == null || dto.getNewPassword().isBlank())
             return ResponseEntity.badRequest().body("New password is required");
-        }
-
         passwordResetService.resetPassword(dto.getToken().trim(), dto.getNewPassword());
-
-        return ResponseEntity.ok("Password has been reset successfully.");
+        return ResponseEntity.ok(Map.of("message", "Password has been reset successfully. You may now log in."));
     }
-
-
 }

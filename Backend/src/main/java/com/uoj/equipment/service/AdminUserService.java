@@ -1,169 +1,95 @@
 package com.uoj.equipment.service;
 
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
 import com.uoj.equipment.dto.CreateUserRequestDTO;
 import com.uoj.equipment.entity.User;
 import com.uoj.equipment.enums.Role;
 import com.uoj.equipment.repository.UserRepository;
-import com.uoj.equipment.util.DepartmentUtil;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
 
 @Service
 public class AdminUserService {
 
+    private static final String DEFAULT_PASSWORD = "Default@123";
+
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final NotificationService notificationService;
 
     public AdminUserService(UserRepository userRepository,
-                            PasswordEncoder passwordEncoder) {
+                            PasswordEncoder passwordEncoder,
+                            NotificationService notificationService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
+        this.notificationService = notificationService;
     }
 
-    @Transactional
+    /**
+     * Admin creates any user type.
+     * Admin-created users are emailVerified=true (no email confirmation required).
+     * Default password: Default@123
+     */
     public User createUserWithRole(CreateUserRequestDTO dto, Role role) {
-        if (role == Role.STUDENT) {
-            throw new IllegalArgumentException("Admin cannot create students from user management");
+        if (userRepository.existsByEmail(dto.getEmail()))
+            throw new IllegalArgumentException("Email already exists: " + dto.getEmail());
+
+        User user = new User();
+        user.setFullName(dto.getFullName());
+        user.setEmail(dto.getEmail());
+        user.setDepartment(dto.getDepartment());
+        user.setRole(role);
+        user.setPasswordHash(passwordEncoder.encode(DEFAULT_PASSWORD));
+        user.setEnabled(true);
+        user.setEmailVerified(true); // Admin-created users skip email verification
+
+        if (dto.getRegNo() != null && !dto.getRegNo().isBlank())
+            user.setRegNo(dto.getRegNo());
+
+        User saved = userRepository.save(user);
+
+        // Notify the new user via email with their credentials
+        try {
+            String roleLabel = role.name().charAt(0) + role.name().substring(1).toLowerCase();
+            notificationService.notifyUser(
+                    saved,
+                    com.uoj.equipment.enums.NotificationType.REQUEST_SUBMITTED, // generic type
+                    "Your ERMS Account Has Been Created",
+                    "Dear " + saved.getFullName() + ",\n\n" +
+                    "An account has been created for you in the Equipment Request Management System (ERMS) " +
+                    "at the Faculty of Engineering, University of Jaffna.\n\n" +
+                    "Role: " + roleLabel + "\n" +
+                    "Email: " + saved.getEmail() + "\n" +
+                    "Temporary Password: " + DEFAULT_PASSWORD + "\n\n" +
+                    "Please log in and change your password immediately.\n\n" +
+                    "Login at: http://erms.eng.jfn.ac.lk/login",
+                    null, null
+            );
+        } catch (Exception e) {
+            System.err.println("[AdminUserService] Welcome email failed: " + e.getMessage());
         }
 
-        String email = normalizeEmail(dto.getEmail());
-        String department = DepartmentUtil.normalize(dto.getDepartment());
-
-        if (email == null || email.isBlank()) {
-            throw new IllegalArgumentException("Email is required");
-        }
-        if (dto.getFullName() == null || dto.getFullName().isBlank()) {
-            throw new IllegalArgumentException("Full name is required");
-        }
-        if (department == null || department.isBlank()) {
-            throw new IllegalArgumentException("Department is required");
-        }
-
-        if (userRepository.existsByEmail(email)) {
-            throw new IllegalArgumentException("Email already exists: " + email);
-        }
-
-        if (role == Role.HOD && hasDepartmentHod(department)) {
-            throw new IllegalArgumentException("This department already has one HOD. Don't add more than one.");
-        }
-
-        User u = new User();
-        u.setFullName(dto.getFullName().trim());
-        u.setEmail(email);
-        u.setDepartment(department);
-        u.setRole(role);
-
-        if (role == Role.STUDENT) {
-            String regNo = normalizeRegNo(dto.getRegNo());
-            if (regNo == null || regNo.isBlank()) {
-                throw new IllegalArgumentException("regNo required for STUDENT");
-            }
-            if (userRepository.existsByRegNo(regNo)) {
-                throw new IllegalArgumentException("Registration number already exists: " + regNo);
-            }
-            u.setRegNo(regNo);
-        }
-
-        String password = (dto.getInitialPassword() == null || dto.getInitialPassword().isBlank())
-                ? "Default@123"
-                : dto.getInitialPassword();
-
-        u.setPasswordHash(passwordEncoder.encode(password));
-        u.setEnabled(true);
-
-        return userRepository.save(u);
+        return saved;
     }
 
-    @Transactional
     public User updateUserBasicInfo(Long id, CreateUserRequestDTO dto) {
-        User u = userRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("User not found"));
-
-        if (u.getRole() == Role.STUDENT) {
-            if (dto.getFullName() != null && !dto.getFullName().isBlank()) {
-                u.setFullName(dto.getFullName().trim());
-            }
-            if (dto.getRegNo() != null) {
-                String regNo = normalizeRegNo(dto.getRegNo());
-                if (regNo == null || regNo.isBlank()) {
-                    throw new IllegalArgumentException("Registration number is required");
-                }
-                if (userRepository.existsByRegNoAndIdNot(regNo, u.getId())) {
-                    throw new IllegalArgumentException("Registration number already exists: " + regNo);
-                }
-                u.setRegNo(regNo);
-            }
-            return userRepository.save(u);
-        }
-
-        if (dto.getFullName() != null && !dto.getFullName().isBlank()) {
-            u.setFullName(dto.getFullName().trim());
-        }
-
-        if (dto.getEmail() != null) {
-            String email = normalizeEmail(dto.getEmail());
-            if (email == null || email.isBlank()) {
-                throw new IllegalArgumentException("Email is required");
-            }
-            if (userRepository.existsByEmailAndIdNot(email, u.getId())) {
-                throw new IllegalArgumentException("Email already exists: " + email);
-            }
-            u.setEmail(email);
-        }
-
-        if (dto.getDepartment() != null) {
-            String newDepartment = DepartmentUtil.normalize(dto.getDepartment());
-            if (newDepartment == null || newDepartment.isBlank()) {
-                throw new IllegalArgumentException("Department is required");
-            }
-            if (u.getRole() == Role.HOD && !DepartmentUtil.equalsNormalized(u.getDepartment(), newDepartment) && hasDepartmentHod(newDepartment)) {
-                throw new IllegalArgumentException("This department already has one HOD. Don't add more than one.");
-            }
-            u.setDepartment(newDepartment);
-        }
-
-        if (dto.getEnabled() != null) {
-            u.setEnabled(dto.getEnabled());
-        }
-
-        return userRepository.save(u);
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("User not found: " + id));
+        if (dto.getFullName() != null) user.setFullName(dto.getFullName());
+        if (dto.getDepartment() != null) user.setDepartment(dto.getDepartment());
+        if (dto.getRegNo() != null) user.setRegNo(dto.getRegNo());
+        return userRepository.save(user);
     }
 
-    @Transactional
     public void deleteUser(Long id) {
-        User u = userRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("User not found"));
-        userRepository.delete(u);
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("User not found: " + id));
+        userRepository.delete(user);
     }
 
-    @Transactional
     public User disableUser(Long id) {
-        User u = userRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("User not found"));
-
-        if (u.getRole() == Role.STUDENT) {
-            throw new IllegalArgumentException("Disable/enable is not available for students");
-        }
-
-        u.setEnabled(!u.isEnabled());
-        return userRepository.save(u);
-    }
-
-    private boolean hasDepartmentHod(String department) {
-        return userRepository
-                .findByDepartmentInAndRoleOrderByFullNameAsc(DepartmentUtil.aliasesForQuery(department), Role.HOD)
-                .stream()
-                .findAny()
-                .isPresent();
-    }
-
-    private String normalizeEmail(String email) {
-        return email == null ? null : email.trim().toLowerCase();
-    }
-
-    private String normalizeRegNo(String regNo) {
-        return regNo == null ? null : regNo.trim().toUpperCase();
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("User not found: " + id));
+        user.setEnabled(false);
+        return userRepository.save(user);
     }
 }

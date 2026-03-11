@@ -29,6 +29,10 @@ public class User {
     @Column(nullable = false)
     private boolean enabled = true;
 
+    // NEW: email must be verified before login is allowed (except admin-created users)
+    @Column(name = "email_verified", nullable = false)
+    private boolean emailVerified = false;
+
     // Student only
     @Column(name = "reg_no", unique = true, length = 40)
     private String regNo;
@@ -44,6 +48,7 @@ public class User {
     public Role getRole() { return role; }
     public String getDepartment() { return department; }
     public boolean isEnabled() { return enabled; }
+    public boolean isEmailVerified() { return emailVerified; }
     public String getRegNo() { return regNo; }
     public String getFullName() { return fullName; }
 
@@ -53,6 +58,7 @@ public class User {
     public void setRole(Role role) { this.role = role; }
     public void setDepartment(String department) { this.department = department; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public void setEmailVerified(boolean emailVerified) { this.emailVerified = emailVerified; }
     public void setRegNo(String regNo) { this.regNo = regNo; }
     public void setFullName(String fullName) { this.fullName = fullName; }
 }

@@ -23,11 +23,11 @@ public class AdminSeeder {
             admin.setFullName("System Admin");
             admin.setEmail(adminEmail);
             admin.setRegNo("ADMIN");          // any non-null value if DB requires
-            admin.setDepartment("ADMIN");     // any non-null value if DB requires
+            admin.setDepartment("ADMIN");     // any non-null value if DB requir
             admin.setRole(Role.ADMIN);
             admin.setEnabled(true);
 
-            // set initial password
+            // set initial password//
             admin.setPasswordHash(passwordEncoder.encode("Admin@123"));
 
             userRepository.save(admin);

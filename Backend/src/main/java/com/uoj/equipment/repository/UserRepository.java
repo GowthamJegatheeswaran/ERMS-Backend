@@ -13,15 +13,19 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     Optional<User> findByRegNo(String regNo);
 
-
     Optional<User> findByEmail(String email);
 
     boolean existsByEmail(String email);
 
+    boolean existsByEmailAndIdNot(String email, Long id);
+
     List<User> findByRole(Role role);
 
     List<User> findByRoleAndDepartment(Role role, String department);
+
     boolean existsByRegNo(String regNo);
+
+    boolean existsByRegNoAndIdNot(String regNo, Long id);
 
     List<User> findByDepartmentOrderByFullNameAsc(String department);
 
@@ -29,7 +33,8 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     // For legacy department aliases (e.g., CE may include COM/CSE)
     List<User> findByDepartmentInAndRoleOrderByFullNameAsc(List<String> departments, Role role);
+    List<User> findByRoleInAndDepartmentInOrderByFullNameAsc(List<Role> roles, List<String> departments);
 
     List<User> findByRoleAndDepartmentInOrderByFullNameAsc(Role role, List<String> departments);
-
+    List<User> findByDepartmentAndRoleIn(String department, List<Role> roles);
 }

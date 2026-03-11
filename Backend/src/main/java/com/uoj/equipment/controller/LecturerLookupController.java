@@ -18,16 +18,21 @@ public class LecturerLookupController {
     }
 
     @GetMapping("/lecturers")
-    public List<UserPublicDTO> lecturers(@RequestParam String department) {
-        return userRepository.findByRoleAndDepartmentInOrderByFullNameAsc(Role.LECTURER, com.uoj.equipment.util.DepartmentUtil.aliasesForQuery(department))
-                .stream()
-                .map(u -> new UserPublicDTO(
-                        u.getId(),
-                        u.getEmail(),
-                        u.getFullName(),
-                        u.getRole().name(),
-                        u.getDepartment()
-                ))
-                .toList();
-    }
+public List<UserPublicDTO> lecturers(@RequestParam String department) {
+    // Include both LECTURER and HOD roles
+    List<Role> roles = List.of(Role.LECTURER, Role.HOD);
+
+    return userRepository.findByRoleInAndDepartmentInOrderByFullNameAsc(
+            roles,
+            com.uoj.equipment.util.DepartmentUtil.aliasesForQuery(department)
+    ).stream()
+     .map(u -> new UserPublicDTO(
+            u.getId(),
+            u.getEmail(),
+            u.getFullName(),
+            u.getRole().name(),
+            u.getDepartment()
+     ))
+     .toList();
+}
 }

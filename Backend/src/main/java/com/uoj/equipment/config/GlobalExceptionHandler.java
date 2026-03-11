@@ -8,8 +8,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.Map;
 
-/**
- * Converts common runtime exceptions into clean JSON errors for the frontend.
+/*
+ *  Converts common runtime exceptions into clean JSON errors for the frontend.
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {

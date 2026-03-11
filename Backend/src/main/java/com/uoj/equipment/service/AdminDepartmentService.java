@@ -27,7 +27,6 @@ public class AdminDepartmentService {
         this.purchaseRequestRepository = purchaseRequestRepository;
     }
 
-    // Hard-coded departments for now (EEE, COM)
     public List<String> getDepartments() {
         return List.of("CE", "EEE");
     }
@@ -65,13 +64,13 @@ public class AdminDepartmentService {
                         u.getId(),
                         u.getFullName(),
                         u.getEmail(),
-                        u.getRole().name()
+                        u.getRegNo(),
+                        u.getDepartment(),
+                        u.getRole().name(),
+                        u.isEnabled()
                 ))
                 .collect(Collectors.toList());
     }
-
-
-     //HOD-approved purchase requests, waiting for Admin.
 
     public List<PurchaseRequestSummaryDTO> getDepartmentPendingPurchases(String department) {
         List<String> depts = com.uoj.equipment.util.DepartmentUtil.aliasesForQuery(department);
@@ -84,53 +83,40 @@ public class AdminDepartmentService {
                 .collect(Collectors.toList());
     }
 
-    
+    public List<PurchaseRequestSummaryDTO> getDepartmentPurchaseReport(String department) {
+        List<String> depts = com.uoj.equipment.util.DepartmentUtil.aliasesForQuery(department);
 
-/**
- * Admin report: show all purchase requests that are in terminal/accepted states
- * (issued/received/rejected). This powers Admin_Report UI.
- */
-public List<PurchaseRequestSummaryDTO> getDepartmentPurchaseReport(String department) {
-    List<String> depts = com.uoj.equipment.util.DepartmentUtil.aliasesForQuery(department);
+        List<PurchaseRequest> out = new java.util.ArrayList<>();
+        out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.ISSUED_BY_ADMIN));
+        out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.RECEIVED_BY_HOD));
+        out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.REJECTED_BY_HOD));
+        out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.REJECTED_BY_ADMIN));
 
-    List<PurchaseRequest> out = new java.util.ArrayList<>();
-    // Accepted flow states
-    out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.ISSUED_BY_ADMIN));
-    out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.RECEIVED_BY_HOD));
-    // Rejected states
-    out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.REJECTED_BY_HOD));
-    out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.REJECTED_BY_ADMIN));
+        try { out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.APPROVED_BY_ADMIN)); } catch (Exception ignored) {}
+        try { out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.RECEIVED_BY_TO)); } catch (Exception ignored) {}
 
-    // Legacy statuses (in case old rows exist)
-    try { out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.APPROVED_BY_ADMIN)); } catch (Exception ignored) {}
-    try { out.addAll(purchaseRequestRepository.findByDepartmentInAndStatusOrderByCreatedDateDesc(depts, PurchaseStatus.RECEIVED_BY_TO)); } catch (Exception ignored) {}
-
-    // de-duplicate by id and sort by createdDate desc
-    java.util.Map<Long, PurchaseRequest> uniq = new java.util.LinkedHashMap<>();
-    for (PurchaseRequest pr : out) {
-        if (pr != null && pr.getId() != null) uniq.putIfAbsent(pr.getId(), pr);
+        java.util.Map<Long, PurchaseRequest> uniq = new java.util.LinkedHashMap<>();
+        for (PurchaseRequest pr : out) {
+            if (pr != null && pr.getId() != null) uniq.putIfAbsent(pr.getId(), pr);
+        }
+        return uniq.values().stream()
+                .sorted((a,b) -> {
+                    java.time.LocalDate da = a.getCreatedDate();
+                    java.time.LocalDate db = b.getCreatedDate();
+                    if (da == null && db == null) return 0;
+                    if (da == null) return 1;
+                    if (db == null) return -1;
+                    return db.compareTo(da);
+                })
+                .map(this::mapToSummary)
+                .collect(java.util.stream.Collectors.toList());
     }
-    return uniq.values().stream()
-            .sorted((a,b) -> {
-                java.time.LocalDate da = a.getCreatedDate();
-                java.time.LocalDate db = b.getCreatedDate();
-                if (da == null && db == null) return 0;
-                if (da == null) return 1;
-                if (db == null) return -1;
-                return db.compareTo(da);
-            })
-            .map(this::mapToSummary)
-            .collect(java.util.stream.Collectors.toList());
-}
 
-/**
- * Admin history: currently same as report, kept separate for future filtering.
- */
-public List<PurchaseRequestSummaryDTO> getDepartmentPurchaseHistory(String department) {
-    return getDepartmentPurchaseReport(department);
-}
+    public List<PurchaseRequestSummaryDTO> getDepartmentPurchaseHistory(String department) {
+        return getDepartmentPurchaseReport(department);
+    }
 
-private PurchaseRequestSummaryDTO mapToSummary(PurchaseRequest pr) {
+    private PurchaseRequestSummaryDTO mapToSummary(PurchaseRequest pr) {
         List<PurchaseRequestSummaryDTO.ItemLine> itemLines = pr.getItems()
                 .stream()
                 .map(this::mapItem)
@@ -142,15 +128,12 @@ private PurchaseRequestSummaryDTO mapToSummary(PurchaseRequest pr) {
         dto.setStatus(pr.getStatus());
         dto.setReason(pr.getReason());
         dto.setCreatedDate(pr.getCreatedDate());
-
-        
         dto.setIssuedDate(pr.getIssuedDate());
         dto.setReceivedDate(pr.getReceivedDate());
-if (pr.getHodUser()!= null) {
+        if (pr.getHodUser()!= null) {
             dto.setRequestedByName(pr.getHodUser().getFullName());
             dto.setRequestedByEmail(pr.getHodUser().getEmail());
         }
-
 
         dto.setItems(itemLines);
         return dto;

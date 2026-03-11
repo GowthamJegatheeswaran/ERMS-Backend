@@ -147,10 +147,11 @@ public class RequestService {
         User requester = userRepository.findByEmail(requesterEmail).orElseThrow();
 
         if (requester.getRole() != Role.STUDENT &&
-                requester.getRole() != Role.STAFF &&
-                requester.getRole() != Role.LECTURER) {
-            throw new IllegalArgumentException("Not allowed to create request");
-        }
+    requester.getRole() != Role.STAFF &&
+    requester.getRole() != Role.LECTURER &&
+    requester.getRole() != Role.HOD) {   // added HOD
+    throw new IllegalArgumentException("Not allowed to create request");
+}
 
         if (dto.getLabId() == null) throw new IllegalArgumentException("labId required");
         if (dto.getItems() == null || dto.getItems().isEmpty())
@@ -169,7 +170,8 @@ public class RequestService {
             }
             lecturer = userRepository.findById(dto.getLecturerId())
                     .orElseThrow(() -> new IllegalArgumentException("Lecturer not found"));
-            if (lecturer.getRole() != Role.LECTURER) throw new IllegalArgumentException("Invalid lecturer");
+            if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
+    throw new IllegalArgumentException("Invalid lecturer");
 
             // Lecturer dept must match lab dept
             if (lab.getDepartment() == null || lecturer.getDepartment() == null) {
@@ -198,11 +200,11 @@ public class RequestService {
         req.setLetterAttachmentPath(dto.getLetterAttachmentPath());
         req.setPriorityScore(priorityScore);
 
-        if (requester.getRole() == Role.LECTURER) {
-            req.setStatus(RequestStatus.APPROVED_BY_LECTURER);
-        } else {
-            req.setStatus(RequestStatus.PENDING_LECTURER_APPROVAL);
-        }
+        if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
+    req.setStatus(RequestStatus.APPROVED_BY_LECTURER);
+} else {
+    req.setStatus(RequestStatus.PENDING_LECTURER_APPROVAL);
+}
 
         EquipmentRequest saved = equipmentRequestRepository.save(req);
 
@@ -231,11 +233,11 @@ public class RequestService {
             item.setDamaged(false);
 
             // Per-item workflow status
-            if (requester.getRole() == Role.LECTURER) {
-                item.setStatus(RequestItemStatus.APPROVED_BY_LECTURER);
-            } else {
-                item.setStatus(RequestItemStatus.PENDING_LECTURER_APPROVAL);
-            }
+            if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
+    item.setStatus(RequestItemStatus.APPROVED_BY_LECTURER);
+} else {
+    item.setStatus(RequestItemStatus.PENDING_LECTURER_APPROVAL);
+}
 
             requestItemRepository.save(item);
         }

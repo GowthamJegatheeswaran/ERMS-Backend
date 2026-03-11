@@ -10,6 +10,9 @@ public interface EquipmentRequestRepository extends JpaRepository<EquipmentReque
 
     List<EquipmentRequest> findByRequesterIdOrderByIdDesc(Long requesterId);
 
+    // Used for delete safety check — find ALL requests where this user was the approving lecturer
+    List<EquipmentRequest> findByLecturerId(Long lecturerId);
+
     List<EquipmentRequest> findByLecturerIdAndStatusOrderByIdDesc(Long lecturerId, RequestStatus status);
 
     List<EquipmentRequest> findByLabIdAndStatusOrderByIdDesc(Long labId, RequestStatus status);

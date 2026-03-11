@@ -196,6 +196,8 @@ if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
         req.setPurpose(dto.getPurpose());
         req.setFromDate(dto.getFromDate());
         req.setToDate(dto.getToDate());
+        req.setFromTime(dto.getFromTime());   // NEW — nullable, fine if null
+req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         req.setLetterAttachmentPath(dto.getLetterAttachmentPath());
         req.setPriorityScore(priorityScore);
 
@@ -947,19 +949,21 @@ if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
         }).toList();
 
         return new RequestSummaryDTO(
-                req.getId(),
-                req.getStatus().name(),
-                req.getPurpose(),
-                req.getFromDate(),
-                req.getToDate(),
-                req.getLab().getName(),
-                req.getLab().getDepartment(),
-                req.getLecturer().getFullName(),
-                req.getRequester().getFullName(),
-                req.getRequester().getRegNo(),
-                req.getRequester().getRole().name(),
-                itemDtos
-        );
+            req.getId(),
+            req.getStatus().name(),
+            req.getPurpose(),
+            req.getFromDate(),
+            req.getToDate(),
+            req.getFromTime(),             // NEW
+            req.getToTime(),               // NEW
+            req.getLab().getName(),
+            req.getLab().getDepartment(),
+            req.getLecturer().getFullName(),
+            req.getRequester().getFullName(),
+            req.getRequester().getRegNo(),
+            req.getRequester().getRole().name(),
+            itemDtos
+    );
     }
 
     private ToApprovedRequestDTO mapToApprovedRequestDTO(EquipmentRequest req) {
@@ -1109,17 +1113,19 @@ if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
         boolean canReturn = req.getStatus() == RequestStatus.ISSUED_CONFIRMED && hasReturnable;
 
         return new StudentMyRequestDTO(
-                req.getId(),
-                req.getStatus().name(),
-                req.getPurpose(),
-                req.getFromDate(),
-                req.getToDate(),
-                req.getLab().getName(),
-                req.getLecturer().getFullName(),
-                itemDtos,
-                canAcceptIssue,
-                canReturn
-        );
+            req.getId(),
+            req.getStatus().name(),
+            req.getPurpose(),
+            req.getFromDate(),
+            req.getToDate(),
+            req.getFromTime(),             // NEW
+            req.getToTime(),               // NEW
+            req.getLab().getName(),
+            req.getLecturer().getFullName(),
+            itemDtos,
+            canAcceptIssue,
+            canReturn
+    );
     }
 
 

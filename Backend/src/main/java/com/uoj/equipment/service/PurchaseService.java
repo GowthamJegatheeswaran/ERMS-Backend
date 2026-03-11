@@ -298,7 +298,8 @@ public class PurchaseService {
         return new PurchaseRequestSummaryDTO(
                 "", pr.getId(), pr.getDepartment(), pr.getStatus(),
                 pr.getReason(), pr.getCreatedDate(),
-                toUser.getFullName(), hodUser.getFullName(), itemLines
+                toUser != null ? toUser.getFullName() : "—",
+                hodUser.getFullName(), itemLines
         );
     }
 

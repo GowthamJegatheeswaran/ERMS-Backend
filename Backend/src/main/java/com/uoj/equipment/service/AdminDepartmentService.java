@@ -129,6 +129,7 @@ public class AdminDepartmentService {
     }
 
     private PurchaseRequestSummaryDTO.ItemLine mapItem(PurchaseItem pi) {
+        if (pi.getEquipment() == null) return new PurchaseRequestSummaryDTO.ItemLine("Unknown", pi.getQuantityRequested());
         return new PurchaseRequestSummaryDTO.ItemLine(
                 pi.getEquipment().getName(),
                 pi.getQuantityRequested()

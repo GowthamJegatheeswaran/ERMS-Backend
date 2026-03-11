@@ -20,5 +20,5 @@ public enum NotificationType {
     PURCHASE_REJECTED_BY_HOD,
     PURCHASE_APPROVED_BY_ADMIN,
     PURCHASE_REJECTED_BY_ADMIN,
-    PURCHASE_RECEIVED_BY_HOD       // HOD confirmed items received — TO notified, inventory updated
+    PURCHASE_RECEIVED_BY_HOD
 }

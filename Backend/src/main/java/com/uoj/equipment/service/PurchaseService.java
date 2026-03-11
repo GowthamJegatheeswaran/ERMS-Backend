@@ -1,5 +1,4 @@
 package com.uoj.equipment.service;
-
 import com.uoj.equipment.dto.*;
 import com.uoj.equipment.entity.Equipment;
 import com.uoj.equipment.entity.PurchaseItem;
@@ -39,12 +38,13 @@ public class PurchaseService {
         this.notificationService = notificationService;
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // MAPPERS
-    // ─────────────────────────────────────────────────────────────
+    // ── Mappers ───────────────────────────────────────────────────────────────
 
     private HodPurchaseRequestDTO mapToHodDto(PurchaseRequest pr) {
-        var itemDtos = pr.getItems().stream()
+        // Load via repository — avoids lazy-collection issues
+        List<PurchaseItem> items = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
+        var itemDtos = items.stream()
+                .filter(pi -> pi.getEquipment() != null)
                 .map(pi -> new HodPurchaseItemDTO(
                         pi.getEquipment().getId(),
                         pi.getEquipment().getName(),
@@ -64,14 +64,19 @@ public class PurchaseService {
         );
     }
 
-    private PurchaseRequestSummaryDTO mapToSummary(PurchaseRequest pr) {
+    /**
+     * Always call with a pre-loaded items list from purchaseItemRepository.
+     * Never pass pr.getItems() — that is a lazy collection and will fail
+     * after multiple saves in the same transaction.
+     */
+    private PurchaseRequestSummaryDTO mapToSummary(PurchaseRequest pr, List<PurchaseItem> items) {
         PurchaseRequestSummaryDTO dto = new PurchaseRequestSummaryDTO();
         dto.setId(pr.getId());
         dto.setDepartment(pr.getDepartment());
         dto.setReason(pr.getReason());
         dto.setStatus(pr.getStatus());
         dto.setCreatedDate(pr.getCreatedDate());
-        dto.setIssuedDate(pr.getIssuedDate());       // ← CRITICAL: issuedDate must be set
+        dto.setIssuedDate(pr.getIssuedDate());
         dto.setReceivedDate(pr.getReceivedDate());
 
         if (pr.getToUser() != null) {
@@ -79,19 +84,18 @@ public class PurchaseService {
             dto.setRequestedByEmail(pr.getToUser().getEmail());
         }
 
-        List<PurchaseRequestSummaryDTO.ItemLine> itemDtos = pr.getItems().stream()
+        List<PurchaseRequestSummaryDTO.ItemLine> itemLines = items.stream()
+                .filter(i -> i.getEquipment() != null)
                 .map(i -> new PurchaseRequestSummaryDTO.ItemLine(
                         i.getEquipment().getName(),
                         i.getQuantityRequested()
                 ))
                 .toList();
-        dto.setItems(itemDtos);
+        dto.setItems(itemLines);
         return dto;
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // HOD VIEW PENDING
-    // ─────────────────────────────────────────────────────────────
+    // ── HOD view pending ──────────────────────────────────────────────────────
 
     public List<HodPurchaseRequestDTO> hodViewPending(String hodEmail) {
         User hod = userRepository.findByEmail(hodEmail)
@@ -106,9 +110,7 @@ public class PurchaseService {
                 .toList();
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // TO → SUBMIT PURCHASE REQUEST TO HOD
-    // ─────────────────────────────────────────────────────────────
+    // ── TO → submit to HOD ────────────────────────────────────────────────────
 
     @Transactional
     public PurchaseRequestSummaryDTO submitToHod(String toEmail, NewPurchaseRequestDTO dto) {
@@ -120,8 +122,7 @@ public class PurchaseService {
 
         User hodUser = userRepository
                 .findByDepartmentAndRole(toUser.getDepartment(), Role.HOD)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No HOD found for department " + toUser.getDepartment()));
+                .orElseThrow(() -> new IllegalArgumentException("No HOD found for department " + toUser.getDepartment()));
 
         PurchaseRequest pr = new PurchaseRequest();
         pr.setDepartment(toUser.getDepartment());
@@ -132,8 +133,6 @@ public class PurchaseService {
         pr.setReason(dto.reason());
         PurchaseRequest saved = purchaseRequestRepository.save(pr);
 
-        int totalItems = 0;
-        StringBuilder itemsSummary = new StringBuilder();
         for (NewPurchaseItemDTO itemDto : dto.items()) {
             if (itemDto.equipmentId() == null)
                 throw new IllegalArgumentException("equipmentId is required");
@@ -141,12 +140,10 @@ public class PurchaseService {
                 throw new IllegalArgumentException("quantityRequested must be > 0");
 
             Equipment eq = equipmentRepository.findById(itemDto.equipmentId())
-                    .orElseThrow(() -> new IllegalArgumentException(
-                            "Invalid equipment id: " + itemDto.equipmentId()));
+                    .orElseThrow(() -> new IllegalArgumentException("Invalid equipment id: " + itemDto.equipmentId()));
             if (eq.getLab() == null || eq.getLab().getDepartment() == null ||
                     !eq.getLab().getDepartment().equalsIgnoreCase(toUser.getDepartment()))
-                throw new IllegalArgumentException(
-                        "Equipment does not belong to TO's department lab");
+                throw new IllegalArgumentException("Equipment does not belong to TO's department lab");
 
             PurchaseItem pi = new PurchaseItem();
             pi.setPurchaseRequest(saved);
@@ -154,60 +151,37 @@ public class PurchaseService {
             pi.setQuantityRequested(itemDto.quantityRequested());
             pi.setRemark(itemDto.remark());
             purchaseItemRepository.save(pi);
-
-            totalItems++;
-            if (itemsSummary.length() > 0) itemsSummary.append(", ");
-            itemsSummary.append(eq.getName()).append(" ×").append(itemDto.quantityRequested());
         }
 
-        String deptName   = toUser.getDepartment();
-        String toName     = toUser.getFullName();
-        String hodName    = hodUser.getFullName();
-        String itemsText  = itemsSummary.toString();
-        String reasonText = (dto.reason() != null && !dto.reason().isBlank())
-                ? " Reason: \"" + dto.reason() + "\"." : "";
-
-        // ── Notify HOD: new purchase request awaiting approval ─────────────
         notificationService.notifyUser(
                 hodUser,
                 NotificationType.PURCHASE_SUBMITTED,
-                "New Purchase Request Awaiting Your Approval",
-                "Technical Officer " + toName + " has submitted a purchase request (#" + saved.getId() +
-                ") for the " + deptName + " department. " +
-                "Items requested: " + itemsText + "." + reasonText +
-                " Please review and approve or reject.",
+                "New purchase request",
+                "TO " + toUser.getFullName() + " submitted a purchase request for department " + toUser.getDepartment() + ".",
                 null, saved.getId()
         );
-
-        // ── Notify TO: submission confirmed ───────────────────────────────
         notificationService.notifyUser(
                 toUser,
                 NotificationType.PURCHASE_SUBMITTED,
-                "Purchase Request Submitted Successfully",
-                "Your purchase request #" + saved.getId() + " has been submitted to HOD " +
-                hodName + " for the " + deptName + " department. " +
-                "Items: " + itemsText + "." + reasonText +
-                " You will be notified once the HOD reviews your request.",
+                "Purchase request submitted",
+                "Your purchase request was submitted to HOD " + hodUser.getFullName() + ".",
                 null, saved.getId()
         );
 
-        List<PurchaseRequestSummaryDTO.ItemLine> itemLines =
-                purchaseItemRepository.findByPurchaseRequestId(saved.getId()).stream()
-                        .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(
-                                pi.getEquipment().getName(), pi.getQuantityRequested()))
-                        .toList();
-
+        List<PurchaseItem> savedItems = purchaseItemRepository.findByPurchaseRequestId(saved.getId());
         return new PurchaseRequestSummaryDTO(
                 "Request submitted successfully",
                 saved.getId(), saved.getDepartment(), saved.getStatus(),
                 saved.getReason(), saved.getCreatedDate(),
-                toUser.getFullName(), hodUser.getFullName(), itemLines
+                toUser.getFullName(), hodUser.getFullName(),
+                savedItems.stream()
+                        .filter(pi -> pi.getEquipment() != null)
+                        .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(pi.getEquipment().getName(), pi.getQuantityRequested()))
+                        .toList()
         );
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // HOD → APPROVE OR REJECT PURCHASE REQUEST
-    // ─────────────────────────────────────────────────────────────
+    // ── HOD → approve or reject ───────────────────────────────────────────────
 
     @Transactional
     public PurchaseRequestSummaryDTO hodDecision(String hodEmail, Long purchaseRequestId,
@@ -218,70 +192,62 @@ public class PurchaseService {
 
         PurchaseRequest pr = purchaseRequestRepository.findById(purchaseRequestId)
                 .orElseThrow(() -> new IllegalArgumentException("Purchase request not found"));
-        if (!hodUser.getId().equals(pr.getHodUser().getId()))
+        if (pr.getHodUser() != null && !hodUser.getId().equals(pr.getHodUser().getId()))
             throw new IllegalArgumentException("This purchase request does not belong to this HOD");
         if (pr.getStatus() != PurchaseStatus.SUBMITTED_TO_HOD)
             throw new IllegalArgumentException("Purchase request is not in SUBMITTED_TO_HOD state");
 
-        User toUser  = pr.getToUser();
-        String hodName = hodUser.getFullName();
-        String deptName = pr.getDepartment();
-        String commentText = (comment != null && !comment.isBlank()) ? " Comment: \"" + comment + "\"." : "";
-
-        // Build items summary for notification
-        List<PurchaseItem> purchaseItems = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
-        String itemsSummary = purchaseItems.stream()
-                .map(pi -> pi.getEquipment().getName() + " ×" + pi.getQuantityRequested())
-                .reduce((a, b) -> a + ", " + b).orElse("—");
+        User toUser = pr.getToUser();
 
         if (approve) {
             pr.setStatus(PurchaseStatus.APPROVED_BY_HOD);
             purchaseRequestRepository.save(pr);
 
-            // ── Notify TO: HOD approved, forwarded to Admin ────────────────
-            notificationService.notifyUser(
-                    toUser,
-                    NotificationType.PURCHASE_APPROVED_BY_HOD,
-                    "Purchase Request Approved by HOD",
-                    "HOD " + hodName + " has approved your purchase request #" + pr.getId() +
-                    " for the " + deptName + " department. " +
-                    "Items: " + itemsSummary + "." + commentText +
-                    " The request has been forwarded to the Admin for final approval. " +
-                    "You will be notified once the Admin issues the purchase.",
-                    null, pr.getId()
-            );
+            // Notify all admin users
+            List<User> admins = userRepository.findByRole(Role.ADMIN);
+            for (User admin : admins) {
+                notificationService.notifyUser(
+                        admin,
+                        NotificationType.PURCHASE_APPROVED_BY_HOD,
+                        "Purchase Request Ready for Admin Approval",
+                        "HOD " + hodUser.getFullName() + " approved purchase request #" + pr.getId() +
+                        " (" + pr.getDepartment() + " dept). Awaiting your final approval.",
+                        null, pr.getId()
+                );
+            }
+
+            // Notify TO
+            if (toUser != null) {
+                notificationService.notifyUser(
+                        toUser,
+                        NotificationType.PURCHASE_APPROVED_BY_HOD,
+                        "Purchase approved by HOD",
+                        "HOD " + hodUser.getFullName() + " approved your purchase request. " +
+                        (comment != null ? comment : ""),
+                        null, pr.getId()
+                );
+            }
         } else {
             pr.setStatus(PurchaseStatus.REJECTED_BY_HOD);
             purchaseRequestRepository.save(pr);
 
-            // ── Notify TO: HOD rejected ────────────────────────────────────
-            notificationService.notifyUser(
-                    toUser,
-                    NotificationType.PURCHASE_REJECTED_BY_HOD,
-                    "Purchase Request Rejected by HOD",
-                    "HOD " + hodName + " has rejected your purchase request #" + pr.getId() +
-                    " for the " + deptName + " department." + commentText +
-                    " Items requested: " + itemsSummary + "." +
-                    " You may resubmit a revised request if needed.",
-                    null, pr.getId()
-            );
+            if (toUser != null) {
+                notificationService.notifyUser(
+                        toUser,
+                        NotificationType.PURCHASE_REJECTED_BY_HOD,
+                        "Purchase rejected by HOD",
+                        "HOD " + hodUser.getFullName() + " rejected your purchase request. " +
+                        (comment != null ? comment : ""),
+                        null, pr.getId()
+                );
+            }
         }
 
-        List<PurchaseRequestSummaryDTO.ItemLine> itemLines = purchaseItems.stream()
-                .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(
-                        pi.getEquipment().getName(), pi.getQuantityRequested()))
-                .toList();
-
-        return new PurchaseRequestSummaryDTO(
-                "", pr.getId(), pr.getDepartment(), pr.getStatus(),
-                pr.getReason(), pr.getCreatedDate(),
-                toUser.getFullName(), hodUser.getFullName(), itemLines
-        );
+        List<PurchaseItem> items = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
+        return mapToSummary(pr, items);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // ADMIN → APPROVE OR REJECT DEPARTMENT PURCHASE
-    // ─────────────────────────────────────────────────────────────
+    // ── Admin → approve or reject ─────────────────────────────────────────────
 
     @Transactional
     public PurchaseRequestSummaryDTO adminDecision(String adminEmail,
@@ -299,91 +265,59 @@ public class PurchaseService {
             throw new IllegalArgumentException("Purchase request is not in APPROVED_BY_HOD state");
 
         User hodUser = pr.getHodUser();
-        User toUser  = pr.getToUser();
-        String deptName    = pr.getDepartment();
-        String commentText = (comment != null && !comment.isBlank()) ? " Note: \"" + comment + "\"." : "";
-
-        List<PurchaseItem> purchaseItems = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
-        String itemsSummary = purchaseItems.stream()
-                .map(pi -> pi.getEquipment().getName() + " ×" + pi.getQuantityRequested())
-                .reduce((a, b) -> a + ", " + b).orElse("—");
 
         if (approve) {
-            LocalDate effectiveIssuedDate = issuedDate != null ? issuedDate : LocalDate.now();
             pr.setStatus(PurchaseStatus.ISSUED_BY_ADMIN);
-            pr.setIssuedDate(effectiveIssuedDate);
+            pr.setIssuedDate(issuedDate != null ? issuedDate : LocalDate.now());
             purchaseRequestRepository.save(pr);
 
-            String issuedDateStr = effectiveIssuedDate.toString();
-
-            // ── Notify HOD: Admin issued purchase, please confirm receipt ──
-            notificationService.notifyUser(
-                    hodUser,
-                    NotificationType.PURCHASE_APPROVED_BY_ADMIN,
-                    "Purchase Request Issued — Please Confirm Receipt",
-                    "The Admin has issued purchase request #" + pr.getId() +
-                    " for the " + deptName + " department. Issued date: " + issuedDateStr + "." +
-                    commentText + " Items: " + itemsSummary + "." +
-                    " Please confirm receipt in the system once the items arrive to update inventory.",
-                    null, pr.getId()
-            );
-
-            // ── Notify TO: Admin approved their request ────────────────────
-            notificationService.notifyUser(
-                    toUser,
-                    NotificationType.PURCHASE_APPROVED_BY_ADMIN,
-                    "Purchase Request Approved and Issued by Admin",
-                    "The Admin has approved and issued purchase request #" + pr.getId() +
-                    " for the " + deptName + " department. Issued date: " + issuedDateStr + "." +
-                    commentText + " Items: " + itemsSummary + "." +
-                    " The HOD will confirm receipt and update inventory once items arrive.",
-                    null, pr.getId()
-            );
-
+            if (hodUser != null) {
+                notificationService.notifyUser(
+                        hodUser,
+                        NotificationType.PURCHASE_APPROVED_BY_ADMIN,
+                        "Purchase issued by Admin",
+                        "Admin issued the department purchase request. " + (comment != null ? comment : ""),
+                        null, pr.getId()
+                );
+            }
+            if (pr.getToUser() != null) {
+                notificationService.notifyUser(
+                        pr.getToUser(),
+                        NotificationType.PURCHASE_APPROVED_BY_ADMIN,
+                        "Purchase issued by Admin",
+                        "Admin issued the purchase request. " + (comment != null ? comment : ""),
+                        null, pr.getId()
+                );
+            }
         } else {
             pr.setStatus(PurchaseStatus.REJECTED_BY_ADMIN);
             purchaseRequestRepository.save(pr);
 
-            // ── Notify HOD: Admin rejected ─────────────────────────────────
-            notificationService.notifyUser(
-                    hodUser,
-                    NotificationType.PURCHASE_REJECTED_BY_ADMIN,
-                    "Purchase Request Rejected by Admin",
-                    "The Admin has rejected purchase request #" + pr.getId() +
-                    " for the " + deptName + " department." + commentText +
-                    " Items requested: " + itemsSummary + "." +
-                    " Please contact the Admin office for further clarification.",
-                    null, pr.getId()
-            );
-
-            // ── Notify TO: Admin rejected ──────────────────────────────────
-            notificationService.notifyUser(
-                    toUser,
-                    NotificationType.PURCHASE_REJECTED_BY_ADMIN,
-                    "Purchase Request Rejected by Admin",
-                    "The Admin has rejected purchase request #" + pr.getId() +
-                    " for the " + deptName + " department." + commentText +
-                    " Items requested: " + itemsSummary + "." +
-                    " Please speak with the HOD if you wish to resubmit.",
-                    null, pr.getId()
-            );
+            if (hodUser != null) {
+                notificationService.notifyUser(
+                        hodUser,
+                        NotificationType.PURCHASE_REJECTED_BY_ADMIN,
+                        "Purchase rejected by Admin",
+                        "Admin rejected the department purchase request. " + (comment != null ? comment : ""),
+                        null, pr.getId()
+                );
+            }
+            if (pr.getToUser() != null) {
+                notificationService.notifyUser(
+                        pr.getToUser(),
+                        NotificationType.PURCHASE_REJECTED_BY_ADMIN,
+                        "Purchase rejected by Admin",
+                        "Admin rejected the purchase request. " + (comment != null ? comment : ""),
+                        null, pr.getId()
+                );
+            }
         }
 
-        List<PurchaseRequestSummaryDTO.ItemLine> itemLines = purchaseItems.stream()
-                .map(pi -> new PurchaseRequestSummaryDTO.ItemLine(
-                        pi.getEquipment().getName(), pi.getQuantityRequested()))
-                .toList();
-
-        return new PurchaseRequestSummaryDTO(
-                "", pr.getId(), pr.getDepartment(), pr.getStatus(),
-                pr.getReason(), pr.getCreatedDate(),
-                pr.getToUser().getFullName(), hodUser.getFullName(), itemLines
-        );
+        List<PurchaseItem> items = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
+        return mapToSummary(pr, items);
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // TO — VIEW MY PURCHASE REQUESTS
-    // ─────────────────────────────────────────────────────────────
+    // ── TO: view my requests ──────────────────────────────────────────────────
 
     @Transactional(readOnly = true)
     public List<PurchaseRequestSummaryDTO> toMyPurchaseRequests(String toEmail) {
@@ -393,13 +327,14 @@ public class PurchaseService {
             throw new IllegalArgumentException("Only TO can view their purchase requests");
 
         return purchaseRequestRepository.findByToUserOrderByCreatedDateDesc(toUser)
-                .stream().map(this::mapToSummary).toList();
+                .stream()
+                .map(pr -> mapToSummary(pr, purchaseItemRepository.findByPurchaseRequestId(pr.getId())))
+                .toList();
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // HOD — VIEW ALL MY PURCHASE REQUESTS
-    // ─────────────────────────────────────────────────────────────
+    // ── HOD: view all my requests ─────────────────────────────────────────────
 
+    @Transactional(readOnly = true)
     public List<PurchaseRequestSummaryDTO> hodMyPurchaseRequests(String hodEmail) {
         User hod = userRepository.findByEmail(hodEmail)
                 .orElseThrow(() -> new IllegalArgumentException("HOD not found"));
@@ -407,12 +342,12 @@ public class PurchaseService {
             throw new IllegalArgumentException("Only HOD can view these requests");
 
         return purchaseRequestRepository.findByHodUserOrderByCreatedDateDesc(hod)
-                .stream().map(this::mapToSummary).toList();
+                .stream()
+                .map(pr -> mapToSummary(pr, purchaseItemRepository.findByPurchaseRequestId(pr.getId())))
+                .toList();
     }
 
-    // ─────────────────────────────────────────────────────────────
-    // HOD — CONFIRM ITEMS RECEIVED (updates inventory)
-    // ─────────────────────────────────────────────────────────────
+    // ── HOD: confirm items received ───────────────────────────────────────────
 
     @Transactional
     public PurchaseRequestSummaryDTO hodConfirmReceived(String hodEmail, Long purchaseRequestId) {
@@ -429,42 +364,58 @@ public class PurchaseService {
                 && pr.getStatus() != PurchaseStatus.APPROVED_BY_ADMIN)
             throw new IllegalArgumentException("Purchase request is not in ISSUED_BY_ADMIN state");
 
-        // ── Update inventory ───────────────────────────────────────────────
+        // Load items via repository BEFORE any saves — keeps them in-memory safely
         List<PurchaseItem> items = purchaseItemRepository.findByPurchaseRequestId(pr.getId());
-        StringBuilder itemsSummary = new StringBuilder();
+
+        // Update inventory
         for (PurchaseItem pi : items) {
             Equipment eq = pi.getEquipment();
-            if (eq == null || pi.getQuantityRequested() <= 0) continue;
-            eq.setTotalQty(eq.getTotalQty() + pi.getQuantityRequested());
-            eq.setAvailableQty(eq.getAvailableQty() + pi.getQuantityRequested());
+            if (eq == null) continue;
+            int add = pi.getQuantityRequested();
+            if (add <= 0) continue;
+            eq.setTotalQty(eq.getTotalQty() + add);
+            eq.setAvailableQty(eq.getAvailableQty() + add);
             equipmentRepository.save(eq);
-            if (itemsSummary.length() > 0) itemsSummary.append(", ");
-            itemsSummary.append(eq.getName()).append(" ×").append(pi.getQuantityRequested());
         }
 
         pr.setStatus(PurchaseStatus.RECEIVED_BY_HOD);
         pr.setReceivedDate(LocalDate.now());
         purchaseRequestRepository.save(pr);
 
-        String hodName   = hodUser.getFullName();
-        String deptName  = pr.getDepartment();
-        String itemsText = itemsSummary.length() > 0 ? itemsSummary.toString() : "—";
+        // Build items text for notifications
+        String itemsText = items.stream()
+                .filter(pi -> pi.getEquipment() != null)
+                .map(pi -> pi.getEquipment().getName() + " ×" + pi.getQuantityRequested())
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("—");
 
-        // ── Notify TO: items received, inventory updated ───────────────────
-        if (pr.getToUser() != null) {
+        // Notify all Admin users
+        List<User> admins = userRepository.findByRole(Role.ADMIN);
+        for (User admin : admins) {
             notificationService.notifyUser(
-                    pr.getToUser(),
+                    admin,
                     NotificationType.PURCHASE_RECEIVED_BY_HOD,
-                    "Purchase Items Received — Inventory Updated",
-                    "HOD " + hodName + " has confirmed receipt of the items for purchase request #" +
-                    pr.getId() + " (" + deptName + " department). " +
-                    "Items received: " + itemsText + ". " +
-                    "The lab inventory has been updated accordingly. " +
-                    "Received date: " + pr.getReceivedDate() + ".",
+                    "Purchase Items Confirmed Received by HOD",
+                    "HOD " + hodUser.getFullName() + " confirmed receipt of purchase #" + pr.getId() +
+                    " (" + pr.getDepartment() + " dept). Items: " + itemsText +
+                    ". Inventory updated. Received: " + pr.getReceivedDate() + ".",
                     null, pr.getId()
             );
         }
 
-        return mapToSummary(pr);
+        // Notify TO
+        if (pr.getToUser() != null) {
+            notificationService.notifyUser(
+                    pr.getToUser(),
+                    NotificationType.PURCHASE_RECEIVED_BY_HOD,
+                    "Purchase received — Inventory updated",
+                    "HOD " + hodUser.getFullName() + " confirmed receipt of purchase #" + pr.getId() +
+                    ". Items: " + itemsText + ". Inventory updated.",
+                    null, pr.getId()
+            );
+        }
+
+        // Use the already-loaded items list — NEVER call pr.getItems() after multiple saves
+        return mapToSummary(pr, items);
     }
 }

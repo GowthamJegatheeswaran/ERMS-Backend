@@ -52,17 +52,6 @@ public class AuthController {
             User user = userRepository.findByEmail(dto.getEmail())
                     .orElseThrow(() -> new IllegalArgumentException("Invalid email or password"));
 
-            // Block login if email not verified (only for STUDENT/STAFF self-registered accounts)
-            // Admin-created users have emailVerified = true by default
-            if (!user.isEmailVerified()) {
-                return ResponseEntity.status(403).body(Map.of(
-                        "error", "EMAIL_NOT_VERIFIED",
-                        "message", "Please verify your email address before logging in. " +
-                                   "Check your inbox for the verification link.",
-                        "email", user.getEmail()
-                ));
-            }
-
             if (!user.isEnabled()) {
                 return ResponseEntity.status(403).body(Map.of(
                         "error", "ACCOUNT_DISABLED",

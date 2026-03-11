@@ -41,7 +41,6 @@ public class RequestService {
     private final EquipmentRepository equipmentRepository;
     private final EquipmentRequestRepository equipmentRequestRepository;
     private final RequestItemRepository requestItemRepository;
-
     private final PriorityService priorityService;
     private final NotificationService notificationService;
 
@@ -61,19 +60,19 @@ public class RequestService {
         this.notificationService = notificationService;
     }
 
-
-    // LECTURER QUEU
+    // ─────────────────────────────────────────────────────────────
+    // LECTURER QUEUE  —  sorted by priority score descending
+    // ─────────────────────────────────────────────────────────────
 
     public List<RequestSummaryDTO> lecturerQueueDTO(String lecturerEmail) {
         User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
-        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD) {
+        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
             throw new IllegalArgumentException("Only lecturer or HOD");
-        }
 
-        return equipmentRequestRepository.findByLecturerIdAndStatusOrderByIdDesc(
-                        lecturer.getId(),
-                        RequestStatus.PENDING_LECTURER_APPROVAL
-                ).stream()
+        return equipmentRequestRepository
+                .findByLecturerIdAndStatusOrderByIdDesc(lecturer.getId(), RequestStatus.PENDING_LECTURER_APPROVAL)
+                .stream()
+                .sorted((a, b) -> Integer.compare(b.getPriorityScore(), a.getPriorityScore()))
                 .map(this::mapToRequestSummaryDTO)
                 .toList();
     }
@@ -100,16 +99,16 @@ public class RequestService {
         return mapToRequestSummaryDTO(req);
     }
 
-
-    // CREATE REQUEST
     @Transactional
     public RequestSummaryDTO createRequestAndReturnDTO(String requesterEmail, NewRequestDTO dto) {
         EquipmentRequest saved = createRequest(requesterEmail, dto);
         return mapToRequestSummaryDTO(saved);
     }
 
-
+    // ─────────────────────────────────────────────────────────────
     // STUDENT MY REQUESTS
+    // ─────────────────────────────────────────────────────────────
+
     public List<StudentMyRequestDTO> myRequestsStudentView(String requesterEmail) {
         User requester = userRepository.findByEmail(requesterEmail).orElseThrow();
         return equipmentRequestRepository.findByRequesterIdOrderByIdDesc(requester.getId())
@@ -118,8 +117,10 @@ public class RequestService {
                 .toList();
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // TO APPROVED REQUESTS  —  sorted by priority score descending
+    // ─────────────────────────────────────────────────────────────
 
-    // TO APPROVED REQUESTS (CLEAN VIEW)
     public List<ToApprovedRequestDTO> toApprovedRequestsForLabView(String toEmail, Long labId) {
         User to = userRepository.findByEmail(toEmail).orElseThrow();
         if (to.getRole() != Role.TO) throw new IllegalArgumentException("Only TO");
@@ -127,31 +128,29 @@ public class RequestService {
         Lab lab = labRepository.findById(labId)
                 .orElseThrow(() -> new IllegalArgumentException("Lab not found"));
 
-        // Check this TO is assigned to this lab
         ensureToAllowedForLab(to, lab);
 
-        List<EquipmentRequest> list = equipmentRequestRepository.findByLabIdAndStatusOrderByIdDesc(
-                labId, RequestStatus.APPROVED_BY_LECTURER
-        );
-
-        return list.stream().map(this::mapToApprovedRequestDTO).toList();
+        return equipmentRequestRepository
+                .findByLabIdAndStatusOrderByIdDesc(labId, RequestStatus.APPROVED_BY_LECTURER)
+                .stream()
+                .sorted((a, b) -> Integer.compare(b.getPriorityScore(), a.getPriorityScore()))
+                .map(this::mapToApprovedRequestDTO)
+                .toList();
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // CREATE REQUEST
+    // ─────────────────────────────────────────────────────────────
 
-
-
-    // Supports Lecturer self-request:
     @Transactional
     public EquipmentRequest createRequest(String requesterEmail, NewRequestDTO dto) {
-
         User requester = userRepository.findByEmail(requesterEmail).orElseThrow();
 
         if (requester.getRole() != Role.STUDENT &&
-    requester.getRole() != Role.STAFF &&
-    requester.getRole() != Role.LECTURER &&
-    requester.getRole() != Role.HOD) {   // added HOD
-    throw new IllegalArgumentException("Not allowed to create request");
-}
+            requester.getRole() != Role.STAFF &&
+            requester.getRole() != Role.LECTURER &&
+            requester.getRole() != Role.HOD)
+            throw new IllegalArgumentException("Not allowed to create request");
 
         if (dto.getLabId() == null) throw new IllegalArgumentException("labId required");
         if (dto.getItems() == null || dto.getItems().isEmpty())
@@ -160,34 +159,21 @@ public class RequestService {
         Lab lab = labRepository.findById(dto.getLabId())
                 .orElseThrow(() -> new IllegalArgumentException("Lab not found"));
 
-        // Lecturer selection
         User lecturer;
-if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
-    // Lecturer/HOD auto-assigns themselves — no lecturerId needed
-    lecturer = requester;
-} else {
-    if (dto.getLecturerId() == null) {
-        throw new IllegalArgumentException("lecturerId required");
-    }
-    lecturer = userRepository.findById(dto.getLecturerId())
-            .orElseThrow(() -> new IllegalArgumentException("Lecturer not found"));
-    if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
-        throw new IllegalArgumentException("Invalid lecturer");
+        if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
+            lecturer = requester;
+        } else {
+            if (dto.getLecturerId() == null) throw new IllegalArgumentException("lecturerId required");
+            lecturer = userRepository.findById(dto.getLecturerId())
+                    .orElseThrow(() -> new IllegalArgumentException("Lecturer not found"));
+            if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
+                throw new IllegalArgumentException("Invalid lecturer");
+            if (!com.uoj.equipment.util.DepartmentUtil.equalsNormalized(
+                    lecturer.getDepartment(), lab.getDepartment()))
+                throw new IllegalArgumentException("Lecturer department mismatch");
+        }
 
-    if (lab.getDepartment() == null || lecturer.getDepartment() == null) {
-        throw new IllegalArgumentException("Department information missing for lab/lecturer");
-    }
-    if (!com.uoj.equipment.util.DepartmentUtil.equalsNormalized(lecturer.getDepartment(), lab.getDepartment())) {
-        throw new IllegalArgumentException("Lecturer department mismatch");
-    }
-}
-        int priorityScore = priorityService.calculate(
-                dto.getPurpose(),       // now PurposeType
-                dto.getFromDate(),
-                dto.getToDate(),
-                false
-        );
-
+        int priorityScore = priorityService.calculate(dto.getPurpose(), dto.getFromDate(), dto.getToDate(), false);
 
         EquipmentRequest req = new EquipmentRequest();
         req.setRequester(requester);
@@ -196,16 +182,13 @@ if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
         req.setPurpose(dto.getPurpose());
         req.setFromDate(dto.getFromDate());
         req.setToDate(dto.getToDate());
-        req.setFromTime(dto.getFromTime());   // NEW — nullable, fine if null
-req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
+        req.setFromTime(dto.getFromTime());
+        req.setToTime(dto.getToTime());
         req.setLetterAttachmentPath(dto.getLetterAttachmentPath());
         req.setPriorityScore(priorityScore);
 
-        if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
-    req.setStatus(RequestStatus.APPROVED_BY_LECTURER);
-} else {
-    req.setStatus(RequestStatus.PENDING_LECTURER_APPROVAL);
-}
+        boolean selfApproved = requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD;
+        req.setStatus(selfApproved ? RequestStatus.APPROVED_BY_LECTURER : RequestStatus.PENDING_LECTURER_APPROVAL);
 
         EquipmentRequest saved = equipmentRequestRepository.save(req);
 
@@ -215,15 +198,9 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
             Equipment eq = equipmentRepository.findById(line.getEquipmentId())
                     .orElseThrow(() -> new IllegalArgumentException("Equipment not found"));
-
-            if (!eq.isActive()) {
-                throw new IllegalArgumentException("Equipment inactive: " + eq.getId());
-            }
-
-            if (eq.getLab() == null || eq.getLab().getId() == null ||
-                    !eq.getLab().getId().equals(lab.getId())) {
+            if (!eq.isActive()) throw new IllegalArgumentException("Equipment inactive: " + eq.getId());
+            if (eq.getLab() == null || !eq.getLab().getId().equals(lab.getId()))
                 throw new IllegalArgumentException("Equipment not in selected lab: " + eq.getId());
-            }
 
             RequestItem item = new RequestItem();
             item.setRequest(saved);
@@ -232,128 +209,82 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
             item.setIssuedQty(0);
             item.setReturned(false);
             item.setDamaged(false);
-
-            // Per-item workflow status
-            if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
-    item.setStatus(RequestItemStatus.APPROVED_BY_LECTURER);
-} else {
-    item.setStatus(RequestItemStatus.PENDING_LECTURER_APPROVAL);
-}
-
+            item.setStatus(selfApproved
+                    ? RequestItemStatus.APPROVED_BY_LECTURER
+                    : RequestItemStatus.PENDING_LECTURER_APPROVAL);
             requestItemRepository.save(item);
         }
 
-        // Notifications:
-        if (requester.getRole() == Role.STUDENT || requester.getRole() == Role.STAFF) {
-            // notify requester
+        // ── Notifications ──────────────────────────────────────────────────
+        String labName = lab.getName();
+        String fromDateStr = dto.getFromDate() != null ? dto.getFromDate().toString() : "—";
+        String purposeLabel = dto.getPurpose() != null ? dto.getPurpose().name() : "—";
+        int itemCount = dto.getItems().size();
+
+        if (!selfApproved) {
+            // Notify student/staff: submission confirmed
             notificationService.notifyUser(
                     requester,
                     NotificationType.REQUEST_SUBMITTED,
-                    "Request submitted",
-                    "Your equipment request has been submitted.",
-                    saved.getId(),
-                    null
+                    "Equipment Request Submitted Successfully",
+                    "Your equipment request #" + saved.getId() + " for lab \"" + labName + "\" has been submitted. " +
+                    "Purpose: " + purposeLabel + " | From: " + fromDateStr + " | Items: " + itemCount + ". " +
+                    "Awaiting approval from Lecturer " + lecturer.getFullName() + ".",
+                    saved.getId(), null
             );
 
-            // notify lecturer
+            // Notify lecturer: new request needs approval
             notificationService.notifyUser(
                     lecturer,
                     NotificationType.REQUEST_SUBMITTED,
-                    "New equipment request",
-                    "New request from: " + requester.getFullName(),
-                    saved.getId(),
-                    null
+                    "New Equipment Request Pending Your Approval",
+                    requester.getFullName() + " (" +
+                    (requester.getRegNo() != null ? requester.getRegNo() : requester.getEmail()) + ") " +
+                    "has submitted an equipment request #" + saved.getId() + " for lab \"" + labName + "\". " +
+                    "Purpose: " + purposeLabel + " | From: " + fromDateStr + " | " + itemCount + " item(s). " +
+                    "Priority Score: " + priorityScore + "/100. Please review and approve or reject.",
+                    saved.getId(), null
             );
+        } else {
+            // Lecturer/HOD self-request — auto-approved, now notify TO directly
+            notificationService.notifyUser(
+                    requester,
+                    NotificationType.REQUEST_SUBMITTED,
+                    "Your Equipment Request Has Been Created",
+                    "Your equipment request #" + saved.getId() + " for lab \"" + labName + "\" has been created " +
+                    "and auto-approved. Purpose: " + purposeLabel + " | From: " + fromDateStr + " | Items: " + itemCount + ". " +
+                    "The Technical Officer has been notified to prepare the equipment.",
+                    saved.getId(), null
+            );
+
+            // Notify TO directly since request is already APPROVED_BY_LECTURER
+            User to = lab.getTechnicalOfficer();
+            if (to != null) {
+                notificationService.notifyUser(
+                        to,
+                        NotificationType.REQUEST_APPROVED,
+                        "New Equipment Request Ready for Issuance",
+                        lecturer.getFullName() + " (" + requester.getRole().name() + ") has submitted a self-approved " +
+                        "equipment request #" + saved.getId() + " for lab \"" + labName + "\". " +
+                        "Purpose: " + purposeLabel + " | From: " + fromDateStr + " | " + itemCount + " item(s). " +
+                        "Priority Score: " + priorityScore + "/100. Please prepare and issue the equipment.",
+                        saved.getId(), null
+                );
+            }
         }
-        //LECTURER REQUEST
-        if (requester.getRole() == Role.LECTURER || requester.getRole() == Role.HOD) {
-    notificationService.notifyUser(
-            requester,
-            NotificationType.REQUEST_SUBMITTED,
-            "Your request created",
-            "You created a new equipment request for lab " + lab.getName(),
-            saved.getId(),
-            null
-    );
-}
-
-
 
         return saved;
     }
 
-
-    // ------------------------
-    // Per-item workflow helpers
-    // ------------------------
-
-    /**
-     * Recompute header-level request status from the set of item statuses.
-     * Dashboards still group by request-level status, while actions happen per item.
-     */
-    private void recomputeAndPersistRequestStatus(EquipmentRequest req) {
-        List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
-        if (items.isEmpty()) return;
-
-        boolean anyPendingLecturer = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.PENDING_LECTURER_APPROVAL);
-        boolean anyApproved = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.APPROVED_BY_LECTURER);
-        boolean allRejected = items.stream().allMatch(i -> i.getStatus() == RequestItemStatus.REJECTED_BY_LECTURER);
-
-        boolean anyIssuedPendingAccept = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.ISSUED_PENDING_REQUESTER_ACCEPT);
-        boolean anyIssuedConfirmed = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.ISSUED_CONFIRMED);
-        boolean anyReturnRequested = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.RETURN_REQUESTED);
-        boolean anyDamaged = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.DAMAGED_REPORTED);
-
-        boolean allReturnVerifiedOrNonReturnable = items.stream().allMatch(i -> {
-            ItemType t = i.getEquipment().getItemType();
-            if (t == ItemType.NON_RETURNABLE) return true;
-            return i.getStatus() == RequestItemStatus.RETURN_VERIFIED || i.getStatus() == RequestItemStatus.DAMAGED_REPORTED;
-        });
-
-        RequestStatus newStatus;
-        if (anyPendingLecturer) {
-            newStatus = RequestStatus.PENDING_LECTURER_APPROVAL;
-        } else if (allRejected) {
-            newStatus = RequestStatus.REJECTED_BY_LECTURER;
-        } else if (anyReturnRequested) {
-            newStatus = RequestStatus.RETURNED_PENDING_TO_VERIFY;
-        } else if (allReturnVerifiedOrNonReturnable && anyIssuedConfirmed) {
-            newStatus = anyDamaged ? RequestStatus.DAMAGED_REPORTED : RequestStatus.RETURNED_VERIFIED;
-        } else if (anyIssuedPendingAccept) {
-            newStatus = RequestStatus.ISSUED_PENDING_STUDENT_ACCEPT;
-        } else if (anyIssuedConfirmed) {
-            newStatus = RequestStatus.ISSUED_CONFIRMED;
-        } else if (anyApproved) {
-            newStatus = RequestStatus.APPROVED_BY_LECTURER;
-        } else {
-            newStatus = req.getStatus();
-        }
-
-        if (req.getStatus() != newStatus) {
-            req.setStatus(newStatus);
-            equipmentRequestRepository.save(req);
-        }
-    }
-
-    // Lecturer queue (ENTITY)
-
-    public List<EquipmentRequest> lecturerQueue(String lecturerEmail) {
-        User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
-        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD) {
-            throw new IllegalArgumentException("Only lecturer or HOD");
-        }
-
-        return equipmentRequestRepository.findByLecturerIdAndStatusOrderByIdDesc(
-                lecturer.getId(), RequestStatus.PENDING_LECTURER_APPROVAL
-        );
-    }
+    // ─────────────────────────────────────────────────────────────
+    // LECTURER APPROVE / REJECT
+    // ─────────────────────────────────────────────────────────────
 
     @Transactional
     public EquipmentRequest lecturerApprove(String lecturerEmail, Long requestId) {
         User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
-        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD) {
+        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
             throw new IllegalArgumentException("Only lecturer or HOD");
-        }
 
         EquipmentRequest req = equipmentRequestRepository.findById(requestId)
                 .orElseThrow(() -> new IllegalArgumentException("Request not found"));
@@ -364,7 +295,6 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         if (req.getStatus() != RequestStatus.PENDING_LECTURER_APPROVAL)
             throw new IllegalArgumentException("Not in approval state");
 
-        // Backward-compatible: approve ALL pending items in the request
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
         for (RequestItem it : items) {
             if (it.getStatus() == RequestItemStatus.PENDING_LECTURER_APPROVAL) {
@@ -375,15 +305,39 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
+        String labName = req.getLab().getName();
+        String fromDate = req.getFromDate() != null ? req.getFromDate().toString() : "—";
+        String purposeLabel = req.getPurpose() != null ? req.getPurpose().name() : "—";
+
+        // 1. Notify requester: approved
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.REQUEST_APPROVED,
-                "Request approved",
-                "Your request was approved by " + lecturer.getFullName(),
-                req.getId(),
-                null
+                "Your Equipment Request Has Been Approved",
+                "Great news! Lecturer " + lecturer.getFullName() + " has approved your equipment request #" +
+                req.getId() + " for lab \"" + labName + "\". " +
+                "Purpose: " + purposeLabel + " | From: " + fromDate + ". " +
+                "The Technical Officer will now prepare your equipment. You will receive a notification when it is ready for collection.",
+                req.getId(), null
         );
 
+        // 2. Notify TO: request ready for issuance ← THIS WAS MISSING
+        User to = req.getLab().getTechnicalOfficer();
+        if (to != null) {
+            notificationService.notifyUser(
+                    to,
+                    NotificationType.REQUEST_APPROVED,
+                    "New Approved Request Ready for Issuance",
+                    "Lecturer " + lecturer.getFullName() + " has approved equipment request #" + req.getId() +
+                    " from " + req.getRequester().getFullName() +
+                    (req.getRequester().getRegNo() != null ? " (" + req.getRequester().getRegNo() + ")" : "") +
+                    " for lab \"" + labName + "\". " +
+                    "Purpose: " + purposeLabel + " | From: " + fromDate + " | " + items.size() + " item(s). " +
+                    "Priority Score: " + req.getPriorityScore() + "/100. " +
+                    "Please issue the equipment at your earliest convenience.",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
@@ -391,9 +345,8 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
     @Transactional
     public EquipmentRequest lecturerReject(String lecturerEmail, Long requestId, String reason) {
         User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
-        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD) {
+        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
             throw new IllegalArgumentException("Only lecturer or HOD");
-        }
 
         EquipmentRequest req = equipmentRequestRepository.findById(requestId)
                 .orElseThrow(() -> new IllegalArgumentException("Request not found"));
@@ -404,7 +357,6 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         if (req.getStatus() != RequestStatus.PENDING_LECTURER_APPROVAL)
             throw new IllegalArgumentException("Not in approval state");
 
-        // Backward-compatible: reject ALL pending items in the request
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
         for (RequestItem it : items) {
             if (it.getStatus() == RequestItemStatus.PENDING_LECTURER_APPROVAL) {
@@ -415,29 +367,25 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
-        String msg = "Your request was rejected by " + lecturer.getFullName();
-        if (reason != null && !reason.isBlank()) msg += ". Reason: " + reason;
-
+        String reasonText = (reason != null && !reason.isBlank()) ? " Reason: \"" + reason + "\"." : "";
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.REQUEST_REJECTED,
-                "Request rejected",
-                msg,
-                req.getId(),
-                null
+                "Your Equipment Request Has Been Rejected",
+                "Your equipment request #" + req.getId() + " for lab \"" + req.getLab().getName() +
+                "\" was rejected by Lecturer " + lecturer.getFullName() + "." + reasonText +
+                " If you believe this is an error or would like to resubmit, please speak with your lecturer.",
+                req.getId(), null
         );
 
         return req;
     }
 
-
-    // Lecturer approves a SINGLE request item (equipment line)
     @Transactional
     public EquipmentRequest lecturerApproveItem(String lecturerEmail, Long requestItemId) {
         User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
-        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD) {
+        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
             throw new IllegalArgumentException("Only lecturer or HOD");
-        }
 
         RequestItem item = requestItemRepository.findById(requestItemId)
                 .orElseThrow(() -> new IllegalArgumentException("Request item not found"));
@@ -454,25 +402,43 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
+        String labName = req.getLab().getName();
+        String equipName = item.getEquipment().getName();
+
+        // 1. Notify requester
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.REQUEST_APPROVED,
-                "Request item approved",
-                "An item in your request was approved by " + lecturer.getFullName(),
-                req.getId(),
-                null
+                "Equipment Item Approved",
+                "Lecturer " + lecturer.getFullName() + " has approved \"" + equipName + "\" (qty: " + item.getQuantity() + ") " +
+                "in your request #" + req.getId() + " for lab \"" + labName + "\". " +
+                "The Technical Officer will be notified to prepare this item.",
+                req.getId(), null
         );
+
+        // 2. Notify TO ← MISSING BEFORE
+        User to = req.getLab().getTechnicalOfficer();
+        if (to != null) {
+            notificationService.notifyUser(
+                    to,
+                    NotificationType.REQUEST_APPROVED,
+                    "Equipment Item Approved — Action Required",
+                    "Lecturer " + lecturer.getFullName() + " has approved item \"" + equipName + "\" (qty: " +
+                    item.getQuantity() + ") in request #" + req.getId() + " from " +
+                    req.getRequester().getFullName() + " for lab \"" + labName + "\". " +
+                    "Please issue this item when ready.",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
 
-    // Lecturer rejects a SINGLE request item (equipment line)
     @Transactional
     public EquipmentRequest lecturerRejectItem(String lecturerEmail, Long requestItemId, String reason) {
         User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
-        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD) {
+        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
             throw new IllegalArgumentException("Only lecturer or HOD");
-        }
 
         RequestItem item = requestItemRepository.findById(requestItemId)
                 .orElseThrow(() -> new IllegalArgumentException("Request item not found"));
@@ -489,42 +455,22 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
-        String msg = "An item in your request was rejected by " + lecturer.getFullName();
-        if (reason != null && !reason.isBlank()) msg += ". Reason: " + reason;
-
+        String reasonText = (reason != null && !reason.isBlank()) ? " Reason: \"" + reason + "\"." : "";
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.REQUEST_REJECTED,
-                "Request item rejected",
-                msg,
-                req.getId(),
-                null
+                "Equipment Item Rejected",
+                "Lecturer " + lecturer.getFullName() + " has rejected \"" + item.getEquipment().getName() +
+                "\" in your request #" + req.getId() + "." + reasonText,
+                req.getId(), null
         );
 
         return req;
     }
 
-
-    // TO approved requests
-
-    public List<EquipmentRequest> toApprovedRequestsForLab(String toEmail, Long labId) {
-        User to = userRepository.findByEmail(toEmail).orElseThrow();
-        if (to.getRole() != Role.TO) throw new IllegalArgumentException("Only TO");
-
-        Lab lab = labRepository.findById(labId)
-                .orElseThrow(() -> new IllegalArgumentException("Lab not found"));
-
-        //  new check: is this TO assigned to this lab?
-        ensureToAllowedForLab(to, lab);
-
-        return equipmentRequestRepository.findByLabIdAndStatusOrderByIdDesc(
-                labId, RequestStatus.APPROVED_BY_LECTURER
-        );
-    }
-
-
-
-    // TO issues equipment
+    // ─────────────────────────────────────────────────────────────
+    // TO — ISSUE
+    // ─────────────────────────────────────────────────────────────
 
     @Transactional
     public EquipmentRequest toIssue(String toEmail, Long requestId) {
@@ -532,8 +478,6 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         if (to.getRole() != Role.TO) throw new IllegalArgumentException("Only TO");
 
         EquipmentRequest req = equipmentRequestRepository.findById(requestId).orElseThrow();
-
-        // this TO is assigned for this lab
         ensureToAllowedForLab(to, req.getLab());
 
         if (req.getStatus() != RequestStatus.APPROVED_BY_LECTURER)
@@ -542,22 +486,18 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
         if (items.isEmpty()) throw new IllegalArgumentException("No request items");
 
-        // Verify availability + stock
         for (RequestItem it : items) {
             Equipment eq = it.getEquipment();
-            int need = it.getQuantity();
-            if (eq.getAvailableQty() < need) {
+            if (eq.getAvailableQty() < it.getQuantity())
                 throw new IllegalArgumentException("Not enough stock for: " + eq.getName());
-            }
         }
 
         for (RequestItem it : items) {
             Equipment eq = it.getEquipment();
-            int need = it.getQuantity();
-            eq.setAvailableQty(eq.getAvailableQty() - need);
+            eq.setAvailableQty(eq.getAvailableQty() - it.getQuantity());
             equipmentRepository.save(eq);
-
-            it.setIssuedQty(need);
+            it.setIssuedQty(it.getQuantity());
+            it.setStatus(RequestItemStatus.ISSUED_PENDING_REQUESTER_ACCEPT);
             requestItemRepository.save(it);
         }
 
@@ -567,17 +507,16 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.ISSUE_READY,
-                "Equipment issued - please accept",
-                "TO issued equipment for your request. Please accept to confirm.",
-                req.getId(),
-                null
+                "Your Equipment is Ready for Collection",
+                "Technical Officer " + to.getFullName() + " has issued the equipment for your request #" +
+                req.getId() + " at lab \"" + req.getLab().getName() + "\". " +
+                "Please visit the lab, collect your equipment, and confirm receipt in the system.",
+                req.getId(), null
         );
 
         return req;
     }
 
-
-    // TO issues a SINGLE request item
     @Transactional
     public EquipmentRequest toIssueItem(String toEmail, Long requestItemId) {
         User to = userRepository.findByEmail(toEmail).orElseThrow();
@@ -594,15 +533,13 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
             throw new IllegalArgumentException("Item not ready for issue");
 
         Equipment eq = it.getEquipment();
-        int need = it.getQuantity();
-        if (eq.getAvailableQty() < need) {
+        if (eq.getAvailableQty() < it.getQuantity())
             throw new IllegalArgumentException("Not enough stock for: " + eq.getName());
-        }
 
-        eq.setAvailableQty(eq.getAvailableQty() - need);
+        eq.setAvailableQty(eq.getAvailableQty() - it.getQuantity());
         equipmentRepository.save(eq);
 
-        it.setIssuedQty(need);
+        it.setIssuedQty(it.getQuantity());
         it.setStatus(RequestItemStatus.ISSUED_PENDING_REQUESTER_ACCEPT);
         it.setToWaitReason(null);
         requestItemRepository.save(it);
@@ -612,17 +549,16 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.ISSUE_READY,
-                "Equipment issued - please accept",
-                "TO issued an item for your request. Please accept to confirm.",
-                req.getId(),
-                null
+                "Equipment Item Ready for Collection",
+                "Technical Officer " + to.getFullName() + " has issued \"" + eq.getName() + "\" (qty: " +
+                it.getIssuedQty() + ") from your request #" + req.getId() + " at lab \"" +
+                req.getLab().getName() + "\". Please collect and confirm receipt in the system.",
+                req.getId(), null
         );
 
         return req;
     }
 
-
-    // TO marks a SINGLE request item as waiting (with a reason)
     @Transactional
     public EquipmentRequest toWaitItem(String toEmail, Long requestItemId, String reason) {
         User to = userRepository.findByEmail(toEmail).orElseThrow();
@@ -643,28 +579,32 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
+        String reasonText = (it.getToWaitReason() != null && !it.getToWaitReason().isBlank())
+                ? " Reason: \"" + it.getToWaitReason() + "\"."
+                : " The Technical Officer will notify you when it becomes available.";
         notificationService.notifyUser(
                 req.getRequester(),
                 NotificationType.TO_WAIT,
-                "Item waiting for issue",
-                (it.getToWaitReason() == null || it.getToWaitReason().isBlank())
-                        ? "TO marked an item as waiting for issue."
-                        : "TO marked an item as waiting: " + it.getToWaitReason(),
-                req.getId(),
-                null
+                "Equipment Temporarily Unavailable",
+                "Technical Officer " + to.getFullName() + " has placed \"" + it.getEquipment().getName() +
+                "\" in your request #" + req.getId() + " on hold." + reasonText +
+                " Other approved items in your request are unaffected.",
+                req.getId(), null
         );
 
         return req;
     }
 
-
-
-    // Student/Staff accepts issue
+    // ─────────────────────────────────────────────────────────────
+    // STUDENT ACCEPT ISSUE
+    // ─────────────────────────────────────────────────────────────
 
     @Transactional
     public EquipmentRequest studentAcceptIssue(String requesterEmail, Long requestId) {
         User requester = userRepository.findByEmail(requesterEmail).orElseThrow();
-        if (requester.getRole() != Role.STUDENT && requester.getRole() != Role.STAFF && requester.getRole() != Role.LECTURER)
+        if (requester.getRole() != Role.STUDENT &&
+            requester.getRole() != Role.STAFF &&
+            requester.getRole() != Role.LECTURER)
             throw new IllegalArgumentException("Only requester can accept");
 
         EquipmentRequest req = equipmentRequestRepository.findById(requestId)
@@ -679,33 +619,30 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         req.setStatus(RequestStatus.ISSUED_CONFIRMED);
         equipmentRequestRepository.save(req);
 
-        notificationService.notifyUser(
-                req.getLecturer(),
-                NotificationType.ISSUE_ACCEPTED,
-                "Issue accepted",
-                "Requester accepted issued equipment for request id: " + req.getId(),
-                req.getId(),
-                null
-        );
-        //  notify lecturer
-        notificationService.notifyUser(
-                req.getLecturer(),
-                NotificationType.ISSUE_ACCEPTED,
-                "Equipment issued",
-                "TO has issued equipment for a request you approved.",
-                req.getId(),
-                null
-        );
+        // Notify TO: requester confirmed receipt
+        User to = req.getLab().getTechnicalOfficer();
+        if (to != null) {
+            notificationService.notifyUser(
+                    to,
+                    NotificationType.ISSUE_ACCEPTED,
+                    "Equipment Receipt Confirmed",
+                    requester.getFullName() +
+                    (requester.getRegNo() != null ? " (" + requester.getRegNo() + ")" : "") +
+                    " has confirmed receipt of all equipment for request #" + req.getId() +
+                    " at lab \"" + req.getLab().getName() + "\". The transaction is now active.",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
 
-
-    // Student/Staff accepts issue for a SINGLE request item
     @Transactional
     public EquipmentRequest studentAcceptIssueItem(String requesterEmail, Long requestItemId) {
         User requester = userRepository.findByEmail(requesterEmail).orElseThrow();
-        if (requester.getRole() != Role.STUDENT && requester.getRole() != Role.STAFF && requester.getRole() != Role.LECTURER)
+        if (requester.getRole() != Role.STUDENT &&
+            requester.getRole() != Role.STAFF &&
+            requester.getRole() != Role.LECTURER)
             throw new IllegalArgumentException("Only requester can accept");
 
         RequestItem it = requestItemRepository.findById(requestItemId)
@@ -723,20 +660,27 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
-        notificationService.notifyUser(
-                req.getLecturer(),
-                NotificationType.ISSUE_ACCEPTED,
-                "Issue accepted",
-                "Requester accepted an issued item for request id: " + req.getId(),
-                req.getId(),
-                null
-        );
+        // Notify TO
+        User to = req.getLab().getTechnicalOfficer();
+        if (to != null) {
+            notificationService.notifyUser(
+                    to,
+                    NotificationType.ISSUE_ACCEPTED,
+                    "Equipment Item Receipt Confirmed",
+                    requester.getFullName() +
+                    (requester.getRegNo() != null ? " (" + requester.getRegNo() + ")" : "") +
+                    " has confirmed receipt of \"" + it.getEquipment().getName() +
+                    "\" (qty: " + it.getIssuedQty() + ") from request #" + req.getId() + ".",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
 
-
-    // Student submits return
+    // ─────────────────────────────────────────────────────────────
+    // STUDENT SUBMIT RETURN
+    // ─────────────────────────────────────────────────────────────
 
     @Transactional
     public EquipmentRequest submitReturn(String requesterEmail, Long requestId) {
@@ -755,27 +699,30 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         boolean hasReturnable = items.stream()
                 .anyMatch(i -> i.getEquipment().getItemType() == ItemType.RETURNABLE);
 
-        if (!hasReturnable) {
-            throw new IllegalArgumentException("Return not required for NON_RETURNABLE items");
-        }
+        if (!hasReturnable) throw new IllegalArgumentException("Return not required for NON_RETURNABLE items");
 
         req.setStatus(RequestStatus.RETURNED_PENDING_TO_VERIFY);
         equipmentRequestRepository.save(req);
 
-        notificationService.notifyUser(
-                req.getLecturer(),
-                NotificationType.RETURN_SUBMITTED,
-                "Return submitted",
-                "Requester submitted return for verification. Request id: " + req.getId(),
-                req.getId(),
-                null
-        );
+        // Notify TO: return submitted ← WRONG TARGET BEFORE (was notifying lecturer)
+        User to = req.getLab().getTechnicalOfficer();
+        if (to != null) {
+            notificationService.notifyUser(
+                    to,
+                    NotificationType.RETURN_SUBMITTED,
+                    "Equipment Return Submitted — Inspection Required",
+                    requester.getFullName() +
+                    (requester.getRegNo() != null ? " (" + requester.getRegNo() + ")" : "") +
+                    " has submitted a return for request #" + req.getId() +
+                    " at lab \"" + req.getLab().getName() + "\". " +
+                    "Please inspect the returned equipment and verify or report damage.",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
 
-
-    // Student submits return for a SINGLE request item
     @Transactional
     public EquipmentRequest submitReturnItem(String requesterEmail, Long requestItemId) {
         User requester = userRepository.findByEmail(requesterEmail).orElseThrow();
@@ -798,20 +745,28 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
-        notificationService.notifyUser(
-                req.getLecturer(),
-                NotificationType.RETURN_SUBMITTED,
-                "Return submitted",
-                "Requester submitted return for verification. Request id: " + req.getId(),
-                req.getId(),
-                null
-        );
+        // Notify TO ← WRONG TARGET BEFORE (was notifying lecturer)
+        User to = req.getLab().getTechnicalOfficer();
+        if (to != null) {
+            notificationService.notifyUser(
+                    to,
+                    NotificationType.RETURN_SUBMITTED,
+                    "Equipment Item Return Submitted — Inspection Required",
+                    requester.getFullName() +
+                    (requester.getRegNo() != null ? " (" + requester.getRegNo() + ")" : "") +
+                    " has submitted a return for \"" + it.getEquipment().getName() +
+                    "\" (qty: " + it.getIssuedQty() + ") from request #" + req.getId() +
+                    " at lab \"" + req.getLab().getName() + "\". Please inspect and verify.",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
 
-
-    // TO verifies return
+    // ─────────────────────────────────────────────────────────────
+    // TO VERIFY RETURN
+    // ─────────────────────────────────────────────────────────────
 
     @Transactional
     public EquipmentRequest toVerifyReturn(String toEmail, Long requestId, boolean damaged) {
@@ -819,8 +774,6 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         if (to.getRole() != Role.TO) throw new IllegalArgumentException("Only TO");
 
         EquipmentRequest req = equipmentRequestRepository.findById(requestId).orElseThrow();
-
-        //   this TO is the assigned TO for the lab
         ensureToAllowedForLab(to, req.getLab());
 
         if (req.getStatus() != RequestStatus.RETURNED_PENDING_TO_VERIFY)
@@ -830,7 +783,6 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         for (RequestItem it : items) {
             Equipment eq = it.getEquipment();
-
             if (eq.getItemType() == ItemType.RETURNABLE) {
                 if (!damaged) {
                     eq.setAvailableQty(eq.getAvailableQty() + it.getIssuedQty());
@@ -847,34 +799,32 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
         if (damaged) {
             req.setStatus(RequestStatus.DAMAGED_REPORTED);
             equipmentRequestRepository.save(req);
-
             notificationService.notifyUser(
                     req.getRequester(),
                     NotificationType.DAMAGE_REPORTED,
-                    "Damage reported",
-                    "TO marked returned equipment as damaged for request id: " + req.getId(),
-                    req.getId(),
-                    null
+                    "Damage Reported on Your Returned Equipment",
+                    "Technical Officer " + to.getFullName() + " has inspected and reported damage on the equipment " +
+                    "returned for request #" + req.getId() + " at lab \"" + req.getLab().getName() + "\". " +
+                    "Please contact your department or lab supervisor for further instructions.",
+                    req.getId(), null
             );
         } else {
             req.setStatus(RequestStatus.RETURNED_VERIFIED);
             equipmentRequestRepository.save(req);
-
             notificationService.notifyUser(
                     req.getRequester(),
                     NotificationType.RETURN_VERIFIED,
-                    "Return verified",
-                    "TO verified return for request id: " + req.getId(),
-                    req.getId(),
-                    null
+                    "Equipment Return Successfully Verified",
+                    "Technical Officer " + to.getFullName() + " has verified the return of equipment for request #" +
+                    req.getId() + " at lab \"" + req.getLab().getName() + "\". " +
+                    "All items are accounted for. Thank you for returning the equipment on time.",
+                    req.getId(), null
             );
         }
 
         return req;
     }
 
-
-    // TO verifies return for a SINGLE request item
     @Transactional
     public EquipmentRequest toVerifyReturnItem(String toEmail, Long requestItemId, boolean damaged) {
         User to = userRepository.findByEmail(toEmail).orElseThrow();
@@ -890,9 +840,8 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
             throw new IllegalArgumentException("Item not pending return verification");
 
         Equipment eq = it.getEquipment();
-        if (eq.getItemType() != ItemType.RETURNABLE) {
+        if (eq.getItemType() != ItemType.RETURNABLE)
             throw new IllegalArgumentException("This item is not returnable");
-        }
 
         if (!damaged) {
             eq.setAvailableQty(eq.getAvailableQty() + it.getIssuedQty());
@@ -908,334 +857,297 @@ req.setToTime(dto.getToTime());       // NEW — nullable, fine if null
 
         recomputeAndPersistRequestStatus(req);
 
-        notificationService.notifyUser(
-                req.getRequester(),
-                damaged ? NotificationType.DAMAGE_REPORTED : NotificationType.RETURN_VERIFIED,
-                damaged ? "Damage reported" : "Return verified",
-                damaged
-                        ? "TO marked returned equipment as damaged for request id: " + req.getId()
-                        : "TO verified return for request id: " + req.getId(),
-                req.getId(),
-                null
-        );
+        if (damaged) {
+            notificationService.notifyUser(
+                    req.getRequester(),
+                    NotificationType.DAMAGE_REPORTED,
+                    "Damage Reported — \"" + eq.getName() + "\"",
+                    "Technical Officer " + to.getFullName() + " has reported damage on \"" + eq.getName() +
+                    "\" returned for request #" + req.getId() + ". " +
+                    "Please contact your department or lab supervisor for further instructions.",
+                    req.getId(), null
+            );
+        } else {
+            notificationService.notifyUser(
+                    req.getRequester(),
+                    NotificationType.RETURN_VERIFIED,
+                    "Equipment Item Return Verified",
+                    "Technical Officer " + to.getFullName() + " has verified the return of \"" + eq.getName() +
+                    "\" (qty: " + it.getIssuedQty() + ") for request #" + req.getId() + ". Thank you!",
+                    req.getId(), null
+            );
+        }
 
         return req;
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // TO ALL REQUESTS VIEW
+    // ─────────────────────────────────────────────────────────────
 
+    @Transactional(readOnly = true)
+    public List<RequestSummaryDTO> toRequestsForTo(String toEmail) {
+        User to = userRepository.findByEmail(toEmail)
+                .orElseThrow(() -> new IllegalArgumentException("TO not found"));
 
+        if (to.getRole() != Role.TO)
+            throw new IllegalArgumentException("Only TO can view these requests");
+
+        List<Lab> labs = labRepository.findByTechnicalOfficerId(to.getId());
+        if (labs.isEmpty())
+            throw new IllegalArgumentException("No labs assigned to this TO. Ask HOD to assign.");
+
+        List<Long> labIds = labs.stream().map(Lab::getId).toList();
+
+        return equipmentRequestRepository.findByLabIdInOrderByIdDesc(labIds)
+                .stream()
+                .map(this::mapToRequestSummaryDTO)
+                .toList();
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // LEGACY ENTITY METHODS (used by controllers)
+    // ─────────────────────────────────────────────────────────────
+
+    public List<EquipmentRequest> lecturerQueue(String lecturerEmail) {
+        User lecturer = userRepository.findByEmail(lecturerEmail).orElseThrow();
+        if (lecturer.getRole() != Role.LECTURER && lecturer.getRole() != Role.HOD)
+            throw new IllegalArgumentException("Only lecturer or HOD");
+        return equipmentRequestRepository.findByLecturerIdAndStatusOrderByIdDesc(
+                lecturer.getId(), RequestStatus.PENDING_LECTURER_APPROVAL);
+    }
+
+    public List<EquipmentRequest> toApprovedRequestsForLab(String toEmail, Long labId) {
+        User to = userRepository.findByEmail(toEmail).orElseThrow();
+        if (to.getRole() != Role.TO) throw new IllegalArgumentException("Only TO");
+        Lab lab = labRepository.findById(labId)
+                .orElseThrow(() -> new IllegalArgumentException("Lab not found"));
+        ensureToAllowedForLab(to, lab);
+        return equipmentRequestRepository.findByLabIdAndStatusOrderByIdDesc(labId, RequestStatus.APPROVED_BY_LECTURER);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // DTO ENDPOINT WRAPPERS
+    // ─────────────────────────────────────────────────────────────
+
+    @Transactional
+    public ToIssueResponseDTO toIssueDTO(String toEmail, Long requestId) {
+        return mapToIssueResponseDTO(toIssue(toEmail, requestId));
+    }
+
+    @Transactional
+    public ToIssueResponseDTO toIssueItemDTO(String toEmail, Long requestItemId) {
+        return mapToIssueResponseDTO(toIssueItem(toEmail, requestItemId));
+    }
+
+    @Transactional
+    public StudentAcceptanceDTO studentAcceptIssueDTO(String requesterEmail, Long requestId) {
+        return mapToStudentAcceptanceDTO(studentAcceptIssue(requesterEmail, requestId));
+    }
+
+    @Transactional
+    public StudentAcceptanceDTO studentAcceptIssueItemDTO(String requesterEmail, Long requestItemId) {
+        return mapToStudentAcceptanceDTO(studentAcceptIssueItem(requesterEmail, requestItemId));
+    }
+
+    @Transactional
+    public StudentReturnDTO submitReturnDTO(String requesterEmail, Long requestId) {
+        return mapToStudentReturnDTO(submitReturn(requesterEmail, requestId));
+    }
+
+    @Transactional
+    public StudentReturnDTO submitReturnItemDTO(String requesterEmail, Long requestItemId) {
+        return mapToStudentReturnDTO(submitReturnItem(requesterEmail, requestItemId));
+    }
+
+    @Transactional
+    public ToVerifyReturnResponseDTO toVerifyReturnDTO(String toEmail, Long requestId, boolean damaged) {
+        return mapToVerifyReturnDTO(toVerifyReturn(toEmail, requestId, damaged), damaged);
+    }
+
+    @Transactional
+    public ToVerifyReturnResponseDTO toVerifyReturnItemDTO(String toEmail, Long requestItemId, boolean damaged) {
+        return mapToVerifyReturnDTO(toVerifyReturnItem(toEmail, requestItemId, damaged), damaged);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // RECOMPUTE REQUEST STATUS FROM ITEMS
+    // ─────────────────────────────────────────────────────────────
+
+    private void recomputeAndPersistRequestStatus(EquipmentRequest req) {
+        List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
+        if (items.isEmpty()) return;
+
+        boolean anyPendingLecturer  = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.PENDING_LECTURER_APPROVAL);
+        boolean anyApproved         = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.APPROVED_BY_LECTURER);
+        boolean allRejected         = items.stream().allMatch(i -> i.getStatus() == RequestItemStatus.REJECTED_BY_LECTURER);
+        boolean anyIssuedPending    = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.ISSUED_PENDING_REQUESTER_ACCEPT);
+        boolean anyIssuedConfirmed  = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.ISSUED_CONFIRMED);
+        boolean anyReturnRequested  = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.RETURN_REQUESTED);
+        boolean anyDamaged          = items.stream().anyMatch(i -> i.getStatus() == RequestItemStatus.DAMAGED_REPORTED);
+
+        boolean allReturnDoneOrNonReturnable = items.stream().allMatch(i -> {
+            ItemType t = i.getEquipment().getItemType();
+            if (t == ItemType.NON_RETURNABLE) return true;
+            return i.getStatus() == RequestItemStatus.RETURN_VERIFIED || i.getStatus() == RequestItemStatus.DAMAGED_REPORTED;
+        });
+
+        RequestStatus newStatus;
+        if (anyPendingLecturer) {
+            newStatus = RequestStatus.PENDING_LECTURER_APPROVAL;
+        } else if (allRejected) {
+            newStatus = RequestStatus.REJECTED_BY_LECTURER;
+        } else if (anyReturnRequested) {
+            newStatus = RequestStatus.RETURNED_PENDING_TO_VERIFY;
+        } else if (allReturnDoneOrNonReturnable && anyIssuedConfirmed) {
+            newStatus = anyDamaged ? RequestStatus.DAMAGED_REPORTED : RequestStatus.RETURNED_VERIFIED;
+        } else if (anyIssuedPending) {
+            newStatus = RequestStatus.ISSUED_PENDING_STUDENT_ACCEPT;
+        } else if (anyIssuedConfirmed) {
+            newStatus = RequestStatus.ISSUED_CONFIRMED;
+        } else if (anyApproved) {
+            newStatus = RequestStatus.APPROVED_BY_LECTURER;
+        } else {
+            newStatus = req.getStatus();
+        }
+
+        if (req.getStatus() != newStatus) {
+            req.setStatus(newStatus);
+            equipmentRequestRepository.save(req);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // DTO MAPPERS
-    private RequestSummaryDTO mapToRequestSummaryDTO(EquipmentRequest req) {
-        User requester = req.getRequester();
-        User lecturer = req.getLecturer();
-        Lab lab = req.getLab();
+    // ─────────────────────────────────────────────────────────────
 
+    private RequestSummaryDTO mapToRequestSummaryDTO(EquipmentRequest req) {
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
         List<RequestSummaryItemDTO> itemDtos = items.stream().map(ri -> {
             Equipment e = ri.getEquipment();
             return new RequestSummaryItemDTO(
-                    ri.getId(),
-                    e.getId(),
-                    e.getName(),
-                    e.getCategory(),
-                    e.getItemType().name(),
-                    ri.getQuantity(),
+                    ri.getId(), e.getId(), e.getName(), e.getCategory(),
+                    e.getItemType().name(), ri.getQuantity(),
                     ri.getStatus() == null ? null : ri.getStatus().name(),
-                    ri.getToWaitReason(),
-                    ri.getIssuedQty(),
-                    ri.isReturned(),
-                    ri.isDamaged()
+                    ri.getToWaitReason(), ri.getIssuedQty(), ri.isReturned(), ri.isDamaged()
             );
         }).toList();
 
         return new RequestSummaryDTO(
-            req.getId(),
-            req.getStatus().name(),
-            req.getPurpose(),
-            req.getFromDate(),
-            req.getToDate(),
-            req.getFromTime(),             // NEW
-            req.getToTime(),               // NEW
-            req.getLab().getName(),
-            req.getLab().getDepartment(),
-            req.getLecturer().getFullName(),
-            req.getRequester().getFullName(),
-            req.getRequester().getRegNo(),
-            req.getRequester().getRole().name(),
-            itemDtos
-    );
+                req.getId(), req.getStatus().name(), req.getPurpose(),
+                req.getFromDate(), req.getToDate(), req.getFromTime(), req.getToTime(),
+                req.getLab().getName(), req.getLab().getDepartment(),
+                req.getLecturer().getFullName(), req.getRequester().getFullName(),
+                req.getRequester().getRegNo(), req.getRequester().getRole().name(),
+                itemDtos
+        );
     }
 
     private ToApprovedRequestDTO mapToApprovedRequestDTO(EquipmentRequest req) {
         User requester = req.getRequester();
-        User lecturer = req.getLecturer();
-        Lab lab = req.getLab();
+        User lecturer  = req.getLecturer();
+        Lab  lab       = req.getLab();
 
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
-
         List<ToApprovedRequestItemDTO> itemDtos = items.stream().map(ri -> {
             Equipment e = ri.getEquipment();
             return new ToApprovedRequestItemDTO(
-                    ri.getId(),
-                    e.getId(),
-                    e.getName(),
-                    e.getCategory(),
-                    e.getItemType().name(),
-                    ri.getQuantity(),
-                    e.getAvailableQty(),
+                    ri.getId(), e.getId(), e.getName(), e.getCategory(),
+                    e.getItemType().name(), ri.getQuantity(), e.getAvailableQty(),
                     ri.getStatus() == null ? null : ri.getStatus().name(),
-                    ri.getToWaitReason(),
-                    ri.getIssuedQty(),
-                    ri.isReturned(),
-                    ri.isDamaged()
+                    ri.getToWaitReason(), ri.getIssuedQty(), ri.isReturned(), ri.isDamaged()
             );
         }).toList();
 
         return new ToApprovedRequestDTO(
-                req.getId(),
-                req.getStatus().name(),
-                req.getPriorityScore(),
-                req.getPurpose(),
-                req.getFromDate(),
-                req.getToDate(),
-
-                requester.getId(),
-                requester.getEmail(),
-                requester.getFullName(),
-                requester.getRegNo(),
-                requester.getDepartment(),
-
-                lab.getId(),
-                lab.getName(),
-                lab.getDepartment(),
-
-                lecturer.getId(),
-                lecturer.getFullName(),
-                lecturer.getDepartment(),
-
+                req.getId(), req.getStatus().name(), req.getPriorityScore(), req.getPurpose(),
+                req.getFromDate(), req.getToDate(),
+                requester.getId(), requester.getEmail(), requester.getFullName(),
+                requester.getRegNo(), requester.getDepartment(),
+                lab.getId(), lab.getName(), lab.getDepartment(),
+                lecturer.getId(), lecturer.getFullName(), lecturer.getDepartment(),
                 itemDtos
         );
     }
 
     private ToIssueResponseDTO mapToIssueResponseDTO(EquipmentRequest req) {
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
-
         List<IssuedItemDTO> issuedItems = items.stream().map(ri -> new IssuedItemDTO(
-                ri.getEquipment().getId(),
-                ri.getEquipment().getName(),
-                ri.getIssuedQty(),
-                ri.getEquipment().getItemType().name()
+                ri.getEquipment().getId(), ri.getEquipment().getName(),
+                ri.getIssuedQty(), ri.getEquipment().getItemType().name()
         )).toList();
-
         return new ToIssueResponseDTO(
-                req.getId(),
-                req.getStatus().name(),
-                req.getLab().getName(),
-                req.getLab().getDepartment(),
-                req.getRequester().getFullName(),
-                req.getRequester().getRegNo(),
-                req.getLecturer().getFullName(),
-                req.getFromDate(),
-                req.getToDate(),
-                issuedItems
+                req.getId(), req.getStatus().name(), req.getLab().getName(), req.getLab().getDepartment(),
+                req.getRequester().getFullName(), req.getRequester().getRegNo(),
+                req.getLecturer().getFullName(), req.getFromDate(), req.getToDate(), issuedItems
         );
     }
 
     private StudentAcceptanceDTO mapToStudentAcceptanceDTO(EquipmentRequest req) {
         return new StudentAcceptanceDTO(
-                req.getId(),
-                req.getStatus().name(),
-                "Issue accepted successfully",
-                req.getLab().getName(),
-                req.getLab().getDepartment(),
-                req.getLecturer().getFullName(),
-                req.getFromDate(),
-                req.getToDate()
+                req.getId(), req.getStatus().name(), "Issue accepted successfully",
+                req.getLab().getName(), req.getLab().getDepartment(),
+                req.getLecturer().getFullName(), req.getFromDate(), req.getToDate()
         );
     }
 
     private StudentReturnDTO mapToStudentReturnDTO(EquipmentRequest req) {
         return new StudentReturnDTO(
-                req.getId(),
-                req.getStatus().name(),
-                "Return submitted successfully",
-                req.getLab().getName(),
-                req.getLab().getDepartment(),
-                req.getFromDate(),
-                req.getToDate()
+                req.getId(), req.getStatus().name(), "Return submitted successfully",
+                req.getLab().getName(), req.getLab().getDepartment(),
+                req.getFromDate(), req.getToDate()
         );
     }
 
     private ToVerifyReturnResponseDTO mapToVerifyReturnDTO(EquipmentRequest req, boolean damagedFlag) {
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
-
         List<VerifiedReturnItemDTO> itemDtos = items.stream().map(ri -> new VerifiedReturnItemDTO(
-                ri.getEquipment().getId(),
-                ri.getEquipment().getName(),
-                ri.getIssuedQty(),
-                damagedFlag,
-                ri.getEquipment().getItemType().name()
+                ri.getEquipment().getId(), ri.getEquipment().getName(),
+                ri.getIssuedQty(), damagedFlag, ri.getEquipment().getItemType().name()
         )).toList();
-
         String msg = damagedFlag ? "Return verified with damage reported" : "Return verified successfully";
-
-        return new ToVerifyReturnResponseDTO(
-                req.getId(),
-                req.getStatus().name(),
-                msg,
-                damagedFlag,
-                itemDtos
-        );
+        return new ToVerifyReturnResponseDTO(req.getId(), req.getStatus().name(), msg, damagedFlag, itemDtos);
     }
 
     private StudentMyRequestDTO mapToStudentMyRequestDTO(EquipmentRequest req) {
         List<RequestItem> items = requestItemRepository.findByRequestId(req.getId());
-
         List<StudentMyRequestItemDTO> itemDtos = items.stream().map(ri ->
                 new StudentMyRequestItemDTO(
-                        ri.getId(),
-                        ri.getEquipment().getId(),
-                        ri.getEquipment().getName(),
-                        ri.getQuantity(),
-                        ri.getEquipment().getItemType().name(),
+                        ri.getId(), ri.getEquipment().getId(), ri.getEquipment().getName(),
+                        ri.getQuantity(), ri.getEquipment().getItemType().name(),
                         ri.getStatus() == null ? null : ri.getStatus().name(),
-                        ri.getToWaitReason(),
-                        ri.getIssuedQty(),
-                        ri.isReturned(),
-                        ri.isDamaged()
+                        ri.getToWaitReason(), ri.getIssuedQty(), ri.isReturned(), ri.isDamaged()
                 )
         ).toList();
 
         boolean hasReturnable = items.stream()
                 .anyMatch(i -> i.getEquipment().getItemType() == ItemType.RETURNABLE);
-
         boolean canAcceptIssue = req.getStatus() == RequestStatus.ISSUED_PENDING_STUDENT_ACCEPT;
         boolean canReturn = req.getStatus() == RequestStatus.ISSUED_CONFIRMED && hasReturnable;
 
         return new StudentMyRequestDTO(
-            req.getId(),
-            req.getStatus().name(),
-            req.getPurpose(),
-            req.getFromDate(),
-            req.getToDate(),
-            req.getFromTime(),             // NEW
-            req.getToTime(),               // NEW
-            req.getLab().getName(),
-            req.getLecturer().getFullName(),
-            itemDtos,
-            canAcceptIssue,
-            canReturn
-    );
+                req.getId(), req.getStatus().name(), req.getPurpose(),
+                req.getFromDate(), req.getToDate(), req.getFromTime(), req.getToTime(),
+                req.getLab().getName(), req.getLecturer().getFullName(),
+                itemDtos, canAcceptIssue, canReturn
+        );
     }
 
-
-    // DTO ENDPOINT METHODS
-    @Transactional
-    public ToIssueResponseDTO toIssueDTO(String toEmail, Long requestId) {
-        EquipmentRequest req = toIssue(toEmail, requestId);
-        return mapToIssueResponseDTO(req);
-    }
-
-    @Transactional
-    public ToIssueResponseDTO toIssueItemDTO(String toEmail, Long requestItemId) {
-        EquipmentRequest req = toIssueItem(toEmail, requestItemId);
-        return mapToIssueResponseDTO(req);
-    }
-
-
-
-    @Transactional
-    public StudentAcceptanceDTO studentAcceptIssueDTO(String requesterEmail, Long requestId) {
-        EquipmentRequest req = studentAcceptIssue(requesterEmail, requestId);
-        return mapToStudentAcceptanceDTO(req);
-    }
-
-    @Transactional
-    public StudentAcceptanceDTO studentAcceptIssueItemDTO(String requesterEmail, Long requestItemId) {
-        EquipmentRequest req = studentAcceptIssueItem(requesterEmail, requestItemId);
-        return mapToStudentAcceptanceDTO(req);
-    }
-
-    @Transactional
-    public StudentReturnDTO submitReturnDTO(String requesterEmail, Long requestId) {
-        EquipmentRequest req = submitReturn(requesterEmail, requestId);
-        return mapToStudentReturnDTO(req);
-    }
-
-    @Transactional
-    public StudentReturnDTO submitReturnItemDTO(String requesterEmail, Long requestItemId) {
-        EquipmentRequest req = submitReturnItem(requesterEmail, requestItemId);
-        return mapToStudentReturnDTO(req);
-    }
-
-    @Transactional
-    public ToVerifyReturnResponseDTO toVerifyReturnDTO(String toEmail, Long requestId, boolean damaged) {
-        EquipmentRequest req = toVerifyReturn(toEmail, requestId, damaged);
-        return mapToVerifyReturnDTO(req, damaged);
-    }
-
-    @Transactional
-    public ToVerifyReturnResponseDTO toVerifyReturnItemDTO(String toEmail, Long requestItemId, boolean damaged) {
-        EquipmentRequest req = toVerifyReturnItem(toEmail, requestItemId, damaged);
-        return mapToVerifyReturnDTO(req, damaged);
-    }
+    // ─────────────────────────────────────────────────────────────
+    // GUARDS
+    // ─────────────────────────────────────────────────────────────
 
     private void ensureToAllowedForLab(User to, Lab lab) {
-        if (to.getRole() != Role.TO) {
+        if (to.getRole() != Role.TO)
             throw new IllegalArgumentException("Only TO can perform this action");
-        }
-
-        if (lab == null) {
+        if (lab == null)
             throw new IllegalArgumentException("Request has no lab");
-        }
-
-        if (lab.getDepartment() == null ||
-                to.getDepartment() == null ||
-                !com.uoj.equipment.util.DepartmentUtil.equalsNormalized(lab.getDepartment(), to.getDepartment())) {
+        if (!com.uoj.equipment.util.DepartmentUtil.equalsNormalized(lab.getDepartment(), to.getDepartment()))
             throw new IllegalArgumentException("TO department mismatch with lab");
-        }
-
         User assignedTo = lab.getTechnicalOfficer();
-        if (assignedTo == null || assignedTo.getId() == null) {
+        if (assignedTo == null || assignedTo.getId() == null)
             throw new IllegalArgumentException("No TO assigned to this lab. Ask HOD to assign.");
-        }
-
-        if (!assignedTo.getId().equals(to.getId())) {
+        if (!assignedTo.getId().equals(to.getId()))
             throw new IllegalArgumentException("You are not the assigned TO for this lab");
-        }
     }
-
-    // java
-    @Transactional(readOnly = true)
-    public List<RequestSummaryDTO> toRequestsForTo(String toEmail) {
-        User to = userRepository.findByEmail(toEmail)
-                .orElseThrow(() -> new IllegalArgumentException("TO not found"));
-
-        if (to.getRole() != Role.TO) {
-            throw new IllegalArgumentException("Only TO can view these requests");
-        }
-
-        // Find labs assigned to this TO
-        List<Lab> labs = labRepository.findByTechnicalOfficerId(to.getId());
-        if (labs.isEmpty()) {
-            throw new IllegalArgumentException("No labs assigned to this TO. Ask HOD to assign.");
-        }
-
-        List<Long> labIds = labs.stream()
-                .map(Lab::getId)
-                .toList();
-
-        // Get all equipment requests for those labs
-        List<EquipmentRequest> requests =
-                equipmentRequestRepository.findByLabIdInOrderByIdDesc(labIds);
-
-        // Map to DTO
-        return requests.stream()
-                .map(this::mapToRequestSummaryDTO)
-                .toList();
-    }
-
-
-
-
 }

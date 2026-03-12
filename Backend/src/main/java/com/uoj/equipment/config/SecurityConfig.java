@@ -31,31 +31,17 @@ public class SecurityConfig {
                 .sessionManagement(sm ->
                         sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        // ── Public endpoints (no auth required) ───────────────────────────
+                        // Public endpoints (no auth)
+                        // Keep /api/auth/me protected so controllers always receive Authentication.
                         .requestMatchers(
                                 "/api/auth/login",
                                 "/api/auth/signup",
                                 "/api/auth/forgot-password",
                                 "/api/auth/reset-password",
-                                "/api/password/**",
-
-                                /*
-                                 * FIX BUG 8:
-                                 * These two endpoints were missing from permitAll.
-                                 *
-                                 * /api/auth/verify-email (GET) is the link emailed to new students.
-                                 * When a student clicks it, they are NOT logged in yet — the request
-                                 * has no JWT token. Without permitAll, Spring returns 401 and the
-                                 * email verification flow is completely broken.
-                                 *
-                                 * /api/auth/resend-verification (POST) is used on the login page
-                                 * to resend the verification email — also not authenticated.
-                                 */
-                                "/api/auth/verify-email",
-                                "/api/auth/resend-verification"
+                                "/api/password/**"
                         ).permitAll()
 
-                        // ── Role-based access ──────────────────────────────────────────────
+                        // Role-based access
                         .requestMatchers(HttpMethod.POST, "/api/student/requests")
                         .hasAnyRole("STUDENT", "STAFF", "LECTURER", "HOD")
                         .requestMatchers(HttpMethod.GET, "/api/student/requests")
@@ -70,6 +56,7 @@ public class SecurityConfig {
                         .hasAnyRole("STUDENT", "STAFF", "LECTURER", "HOD")
                         .requestMatchers(HttpMethod.POST, "/api/student/request-items/*/return")
                         .hasAnyRole("STUDENT", "STAFF", "LECTURER", "HOD")
+
 
                         .requestMatchers("/api/student/**", "/api/staff/**")
                         .hasAnyRole("STUDENT", "STAFF")
@@ -105,14 +92,18 @@ public class SecurityConfig {
     }
 
     @Bean
-    public CorsFilter corsFilter() {
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        CorsConfiguration config = new CorsConfiguration();
-        config.setAllowCredentials(true);
-        config.addAllowedOrigin("https://equipment-request-frontend-production.up.railway.app");
-        config.addAllowedHeader("*");
-        config.addAllowedMethod("*");
-        source.registerCorsConfiguration("/**", config);
-        return new CorsFilter(source);
-    }
+public CorsFilter corsFilter() {
+    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+    CorsConfiguration config = new CorsConfiguration();
+    config.setAllowCredentials(true);
+
+    // ADD your frontend URL here (the one you set in .env)
+    config.addAllowedOrigin("https://equipment-request-frontend-production.up.railway.app");
+
+    config.addAllowedHeader("*");
+    config.addAllowedMethod("*");
+
+    source.registerCorsConfiguration("/**", config);
+    return new CorsFilter(source);
+}
 }

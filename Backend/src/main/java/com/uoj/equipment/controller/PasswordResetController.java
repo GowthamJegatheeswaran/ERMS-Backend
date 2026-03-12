@@ -14,7 +14,7 @@ public class PasswordResetController {
 
     private final PasswordResetService passwordResetService;
 
-    @Value("${app.frontend.base-url:http://localhost:3000}")
+    @Value("${app.frontend.base-url:https://equipment-request-frontend-production.up.railway.app}")
     private String frontendBaseUrl;
 
     public PasswordResetController(PasswordResetService passwordResetService) {

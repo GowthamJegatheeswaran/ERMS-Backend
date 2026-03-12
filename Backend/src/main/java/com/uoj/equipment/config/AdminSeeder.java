@@ -22,17 +22,34 @@ public class AdminSeeder {
             User admin = new User();
             admin.setFullName("System Admin");
             admin.setEmail(adminEmail);
-            admin.setRegNo("ADMIN");          // any non-null value if DB requires
-            admin.setDepartment("ADMIN");     // any non-null value if DB requir
+            admin.setDepartment("ADMIN");
             admin.setRole(Role.ADMIN);
             admin.setEnabled(true);
-
-            // set initial password//
             admin.setPasswordHash(passwordEncoder.encode("Admin@123"));
+
+            /*
+             * FIX BUG 3: Must set emailVerified=true for admin.
+             * The login endpoint now checks emailVerified for STUDENT/STAFF accounts.
+             * Admin is exempt from that check, but setting it to true is correct
+             * practice and future-proofs against any role-agnostic checks added later.
+             */
+            admin.setEmailVerified(true);
+
+            /*
+             * FIX BUG 9: Do NOT set regNo on admin.
+             * User.regNo has a UNIQUE constraint. Setting regNo='ADMIN' means:
+             *   - On a clean database, seeding works fine.
+             *   - On re-seed or schema migration, it throws a unique constraint violation
+             *     because 'ADMIN' is already taken by the previously seeded row.
+             *   - It also prevents any student from registering with regNo='ADMIN'
+             *     (unlikely but unnecessarily occupies the value).
+             * Leaving regNo as null is safe — MySQL/PostgreSQL allow multiple NULL
+             * values in a unique column.
+             */
 
             userRepository.save(admin);
 
-            System.out.println("✅ Seeded ADMIN: " + adminEmail + " / Admin@123");
+            System.out.println("Seeded ADMIN: " + adminEmail + " / Admin@123");
         };
     }
 }

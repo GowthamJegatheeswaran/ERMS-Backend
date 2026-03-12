@@ -1,10 +1,12 @@
 package com.uoj.equipment.service;
 
+import com.uoj.equipment.dto.LabDTO;
 import com.uoj.equipment.entity.Lab;
 import com.uoj.equipment.entity.User;
 import com.uoj.equipment.enums.Role;
 import com.uoj.equipment.repository.LabRepository;
 import com.uoj.equipment.repository.UserRepository;
+import com.uoj.equipment.util.DepartmentUtil;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,11 +24,16 @@ public class HodLabService {
         this.labRepository = labRepository;
     }
 
-
-     //List all labs for this HOD's department, including assigned TO if any.
-
+    /**
+     * FIX BUG 1 + BUG 11:
+     *   Now returns List<LabDTO> instead of List<Lab> (raw entity).
+     *   - Prevents LazyInitializationException on technicalOfficer
+     *   - Prevents exposing internal User entity fields to frontend
+     *   - Provides clean { id, name, department, technicalOfficerId,
+     *     technicalOfficerName, technicalOfficerEmail } shape to frontend
+     */
     @Transactional(readOnly = true)
-    public List<Lab> listLabsForHod(String hodEmail) {
+    public List<LabDTO> listLabsForHod(String hodEmail) {
         User hod = userRepository.findByEmail(hodEmail)
                 .orElseThrow(() -> new IllegalArgumentException("HOD not found"));
 
@@ -34,19 +41,23 @@ public class HodLabService {
             throw new IllegalArgumentException("Only HOD can view department labs");
         }
 
-        // HOD sees only labs of their department
-        return labRepository.findByDepartmentOrderByIdAsc(hod.getDepartment());
+        return labRepository.findByDepartmentOrderByIdAsc(hod.getDepartment())
+                .stream()
+                .map(this::toLabDTO)
+                .toList();
     }
 
-
-     // Assign a TO (technical officer) to a lab.
-     /* Constraints:
-     *  Caller must be HOD
-     *  Lab department must match HOD department
-     *  TO user must have role - TO and same department
+    /**
+     * FIX BUG 5:
+     *   Old code used equalsIgnoreCase() for department comparison.
+     *   This fails when admin stores "COM" for a CE department lab/user
+     *   (DepartmentUtil treats "COM" == "CE" but raw equalsIgnoreCase does not).
+     *
+     *   FIX: All department comparisons now use DepartmentUtil.equalsNormalized()
+     *   which correctly treats CE / COM / CSE as equivalent.
      */
     @Transactional
-    public Lab assignToToLab(String hodEmail, Long labId, Long toUserId) {
+    public LabDTO assignToToLab(String hodEmail, Long labId, Long toUserId) {
         User hod = userRepository.findByEmail(hodEmail)
                 .orElseThrow(() -> new IllegalArgumentException("HOD not found"));
 
@@ -57,9 +68,8 @@ public class HodLabService {
         Lab lab = labRepository.findById(labId)
                 .orElseThrow(() -> new IllegalArgumentException("Lab not found"));
 
-        // Department check: HOD can only manage labs in own department
-        if (lab.getDepartment() == null || hod.getDepartment() == null ||
-                !lab.getDepartment().equalsIgnoreCase(hod.getDepartment())) {
+        // FIX: use equalsNormalized (handles CE/COM/CSE aliases)
+        if (!DepartmentUtil.equalsNormalized(lab.getDepartment(), hod.getDepartment())) {
             throw new IllegalArgumentException("Cannot assign TO for lab in another department");
         }
 
@@ -70,21 +80,20 @@ public class HodLabService {
             throw new IllegalArgumentException("Selected user is not a TO");
         }
 
-        // TO must belong to same department as lab/HOD
-        if (toUser.getDepartment() == null ||
-                !toUser.getDepartment().equalsIgnoreCase(hod.getDepartment())) {
-            throw new IllegalArgumentException("TO department mismatch with HOD/lab department");
+        // FIX: use equalsNormalized (handles CE/COM/CSE aliases)
+        if (!DepartmentUtil.equalsNormalized(toUser.getDepartment(), hod.getDepartment())) {
+            throw new IllegalArgumentException(
+                    "TO department (" + toUser.getDepartment() + ") does not match " +
+                    "HOD department (" + hod.getDepartment() + ")");
         }
 
         lab.setTechnicalOfficer(toUser);
-        return labRepository.save(lab);
+        Lab saved = labRepository.save(lab);
+        return toLabDTO(saved);
     }
 
-
-     //Clear TO assignment from a lab (no assigned TO).
-
     @Transactional
-    public Lab clearToFromLab(String hodEmail, Long labId) {
+    public LabDTO clearToFromLab(String hodEmail, Long labId) {
         User hod = userRepository.findByEmail(hodEmail)
                 .orElseThrow(() -> new IllegalArgumentException("HOD not found"));
 
@@ -95,12 +104,29 @@ public class HodLabService {
         Lab lab = labRepository.findById(labId)
                 .orElseThrow(() -> new IllegalArgumentException("Lab not found"));
 
-        if (lab.getDepartment() == null || hod.getDepartment() == null ||
-                !lab.getDepartment().equalsIgnoreCase(hod.getDepartment())) {
+        // FIX: use equalsNormalized
+        if (!DepartmentUtil.equalsNormalized(lab.getDepartment(), hod.getDepartment())) {
             throw new IllegalArgumentException("Cannot clear TO for lab in another department");
         }
 
         lab.setTechnicalOfficer(null);
-        return labRepository.save(lab);
+        Lab saved = labRepository.save(lab);
+        return toLabDTO(saved);
+    }
+
+    // ─── DTO mapper ───────────────────────────────────────────────────────────
+
+    private LabDTO toLabDTO(Lab lab) {
+        User to = lab.getTechnicalOfficer();
+        LabDTO dto = new LabDTO();
+        dto.setId(lab.getId());
+        dto.setName(lab.getName());
+        dto.setDepartment(lab.getDepartment());
+        if (to != null) {
+            dto.setTechnicalOfficerId(to.getId());
+            dto.setTechnicalOfficerName(to.getFullName());
+            dto.setTechnicalOfficerEmail(to.getEmail());
+        }
+        return dto;
     }
 }

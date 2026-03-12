@@ -1,15 +1,18 @@
 package com.uoj.equipment.service;
 
 import com.uoj.equipment.dto.CreateUserRequestDTO;
+import com.uoj.equipment.entity.Lab;
 import com.uoj.equipment.entity.Notification;
 import com.uoj.equipment.entity.PasswordResetToken;
 import com.uoj.equipment.entity.User;
 import com.uoj.equipment.enums.Role;
 import com.uoj.equipment.repository.EquipmentRequestRepository;
+import com.uoj.equipment.repository.LabRepository;
 import com.uoj.equipment.repository.NotificationRepository;
 import com.uoj.equipment.repository.PasswordResetTokenRepository;
 import com.uoj.equipment.repository.PurchaseRequestRepository;
 import com.uoj.equipment.repository.UserRepository;
+import com.uoj.equipment.util.DepartmentUtil;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +31,7 @@ public class AdminUserService {
     private final PurchaseRequestRepository   purchaseRequestRepository;
     private final NotificationRepository      notificationRepository;
     private final PasswordResetTokenRepository passwordResetTokenRepository;
+    private final LabRepository               labRepository;
 
     public AdminUserService(UserRepository userRepository,
                             PasswordEncoder passwordEncoder,
@@ -35,7 +39,8 @@ public class AdminUserService {
                             EquipmentRequestRepository requestRepository,
                             PurchaseRequestRepository purchaseRequestRepository,
                             NotificationRepository notificationRepository,
-                            PasswordResetTokenRepository passwordResetTokenRepository) {
+                            PasswordResetTokenRepository passwordResetTokenRepository,
+                            LabRepository labRepository) {
         this.userRepository               = userRepository;
         this.passwordEncoder              = passwordEncoder;
         this.notificationService          = notificationService;
@@ -43,6 +48,7 @@ public class AdminUserService {
         this.purchaseRequestRepository    = purchaseRequestRepository;
         this.notificationRepository       = notificationRepository;
         this.passwordResetTokenRepository = passwordResetTokenRepository;
+        this.labRepository                = labRepository;
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -72,10 +78,25 @@ public class AdminUserService {
         User user = new User();
         user.setFullName(dto.getFullName());
         user.setEmail(dto.getEmail());
-        user.setDepartment(dto.getDepartment());
+
+        /*
+         * FIX BUG 5: Normalize department code when creating users via admin.
+         *
+         * The old code stored the department exactly as typed in the admin form.
+         * If an admin typed 'com' or 'COM' for a CE-department user, it got stored
+         * as-is. Then HodLabService would fail the department equality check when
+         * trying to assign that TO to a lab, because 'COM' != 'CE' (even with
+         * equalsIgnoreCase — since CE and COM are different strings).
+         *
+         * DepartmentUtil.normalize() converts COM → CE and CSE → CE so that all
+         * department references are consistent across the database.
+         */
+        user.setDepartment(DepartmentUtil.normalize(dto.getDepartment()));
         user.setRole(role);
         user.setPasswordHash(passwordEncoder.encode(DEFAULT_PASSWORD));
         user.setEnabled(true);
+
+        // Admin-created users are pre-verified — they don't go through email verification
         user.setEmailVerified(true);
 
         if (dto.getRegNo() != null && !dto.getRegNo().isBlank())
@@ -122,7 +143,8 @@ public class AdminUserService {
         if (dto.getFullName() != null && !dto.getFullName().isBlank())
             user.setFullName(dto.getFullName());
         if (dto.getDepartment() != null && !dto.getDepartment().isBlank())
-            user.setDepartment(dto.getDepartment());
+            // FIX BUG 5: normalize on update too
+            user.setDepartment(DepartmentUtil.normalize(dto.getDepartment()));
 
         return userRepository.save(user);
     }
@@ -131,17 +153,6 @@ public class AdminUserService {
     // DELETE  —  safe for ALL roles
     // ─────────────────────────────────────────────────────────────
 
-    /**
-     * Checks every FK reference before deleting:
-     *
-     *   STUDENT / STAFF  →  equipment_requests.requester_id
-     *   LECTURER / HOD   →  equipment_requests.lecturer_id
-     *   HOD              →  purchase_requests.hod_id
-     *   TO               →  purchase_requests.to_id
-     *
-     * If linked records exist → 409 with clear message.
-     * Notifications + password-reset tokens have no business value → deleted automatically.
-     */
     @Transactional
     public void deleteUser(Long id) {
         User user = userRepository.findById(id)
@@ -186,6 +197,30 @@ public class AdminUserService {
                         "Cannot delete " + user.getFullName() +
                         " — they are linked as Technical Officer on " + n +
                         " purchase request(s). Disable the account instead.");
+
+            /*
+             * FIX BUG 6: Also block deletion if TO is assigned to any lab.
+             *
+             * The old code only checked purchase_requests.to_id. But TOs are also
+             * referenced by labs.to_id. If deleted while assigned, the lab's TO
+             * assignment becomes null silently — HOD would see the lab as "unassigned"
+             * with no warning, and equipment issuance for that lab would break until
+             * the HOD reassigns.
+             *
+             * FIX: Block deletion and require the HOD to unassign the TO from labs first,
+             * or use the disable option instead of delete.
+             */
+            List<Lab> assignedLabs = labRepository.findByTechnicalOfficerId(id);
+            if (!assignedLabs.isEmpty()) {
+                String labNames = assignedLabs.stream()
+                        .map(Lab::getName)
+                        .reduce((a, b) -> a + ", " + b)
+                        .orElse("unknown");
+                throw new IllegalStateException(
+                        "Cannot delete " + user.getFullName() +
+                        " — they are the assigned Technical Officer for lab(s): " + labNames +
+                        ". Ask the HOD to unassign them first, or disable the account instead.");
+            }
         }
 
         // Safe to delete — remove orphaned soft-data first

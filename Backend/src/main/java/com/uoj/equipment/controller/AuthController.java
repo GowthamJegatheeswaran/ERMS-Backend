@@ -60,6 +60,27 @@ public class AuthController {
                 ));
             }
 
+            /*
+             * FIX BUG 2: Enforce email verification for STUDENT accounts.
+             *
+             * Students sign up via the public form → emailVerified=false until they
+             * click the link in their email. The old code let them log in without
+             * verifying, making the entire email-verification flow pointless.
+             *
+             * Admin-created users (HOD, TO, LECTURER, STAFF) have emailVerified=true
+             * set by AdminUserService.createUserWithRole(), so they are unaffected.
+             *
+             * STAFF who self-signup also need to verify — added STAFF check here too.
+             */
+            if ((user.getRole() == Role.STUDENT || user.getRole() == Role.STAFF)
+                    && !user.isEmailVerified()) {
+                return ResponseEntity.status(403).body(Map.of(
+                        "error", "EMAIL_NOT_VERIFIED",
+                        "message", "Please verify your email address before logging in. " +
+                                   "Check your inbox for the verification link."
+                ));
+            }
+
             String token = jwtUtil.generateToken(user.getEmail());
 
             LoginResponseDTO resp = new LoginResponseDTO(
@@ -161,6 +182,11 @@ public class AuthController {
     }
 
     // ── EMAIL VERIFICATION ────────────────────────────────────────────────────
+    /*
+     * NOTE: This endpoint must be in SecurityConfig.permitAll()!
+     * FIX BUG 8: /api/auth/verify-email and /api/auth/resend-verification were
+     * missing from SecurityConfig.permitAll(). See SecurityConfig.java fix.
+     */
     @GetMapping("/verify-email")
     public ResponseEntity<?> verifyEmail(@RequestParam String token) {
         try {
@@ -207,21 +233,22 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("message", "Password has been reset successfully. You may now log in."));
     }
 
+    // ── CHANGE PASSWORD (authenticated) ──────────────────────────────────────
     @PostMapping("/change-password")
-public ResponseEntity<?> changePassword(
-        @RequestBody ChangePasswordDTO dto,
-        @AuthenticationPrincipal UserDetails principalUser) {
+    public ResponseEntity<?> changePassword(
+            @RequestBody ChangePasswordDTO dto,
+            @AuthenticationPrincipal UserDetails principalUser) {
 
-    User user = userRepository.findByEmail(principalUser.getUsername())
-            .orElseThrow(() -> new RuntimeException("User not found"));
+        User user = userRepository.findByEmail(principalUser.getUsername())
+                .orElseThrow(() -> new RuntimeException("User not found"));
 
-    if (!passwordEncoder.matches(dto.getCurrentPassword(), user.getPasswordHash())) {
-        return ResponseEntity.badRequest().body("Current password is incorrect");
+        if (!passwordEncoder.matches(dto.getCurrentPassword(), user.getPasswordHash())) {
+            return ResponseEntity.badRequest().body("Current password is incorrect");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
+        userRepository.save(user);
+
+        return ResponseEntity.ok("Password changed successfully");
     }
-
-    user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
-    userRepository.save(user);
-
-    return ResponseEntity.ok("Password changed successfully");
-}
 }

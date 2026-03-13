@@ -254,6 +254,20 @@ public class PurchaseService {
                     null,
                     pr.getId()
             );
+
+            // All Admin users get notified that HOD approved — needs their action next
+            List<User> admins = userRepository.findByRole(Role.ADMIN);
+            for (User admin : admins) {
+                notificationService.notifyUser(
+                        admin,
+                        NotificationType.PURCHASE_APPROVED_BY_HOD,
+                        "Purchase request approved by HOD",
+                        "HOD " + hodUser.getFullName() + " approved a purchase request from department " +
+                                pr.getDepartment() + ". Awaiting your review.",
+                        null,
+                        pr.getId()
+                );
+            }
         } else {
             pr.setStatus(PurchaseStatus.REJECTED_BY_HOD);
             purchaseRequestRepository.save(pr);

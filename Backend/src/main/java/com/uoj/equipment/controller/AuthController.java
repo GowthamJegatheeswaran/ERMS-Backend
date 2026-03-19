@@ -170,7 +170,7 @@ public class AuthController {
         }
     }
 
-    // ── FORGOT PASSWORD ─  Step 1: send OTP ──────────────────────────────────
+    // ── FORGOT PASSWORD — Step 1: send OTP ───────────────────────────────────
     //   POST /api/auth/forgot-password   { "email": "..." }
     @PostMapping("/forgot-password")
     public ResponseEntity<?> forgotPassword(@RequestBody ForgotPasswordRequestDTO dto) {
@@ -179,16 +179,24 @@ public class AuthController {
                     .body(Map.of("message", "Email is required"));
         try {
             passwordResetService.sendOtpForEmail(dto.getEmail().trim());
+            // Always return 200 (security: don't reveal if email exists)
+            return ResponseEntity.ok(Map.of(
+                    "message",
+                    "If this email is registered, a 6-digit OTP has been sent. Check your inbox."));
         } catch (IllegalArgumentException e) {
-            // Intentionally swallow — never reveal whether an email exists
+            // Email not found — still return 200 for security (don't reveal existence)
             System.err.println("[Auth] OTP skipped: " + e.getMessage());
+            return ResponseEntity.ok(Map.of(
+                    "message",
+                    "If this email is registered, a 6-digit OTP has been sent. Check your inbox."));
         } catch (Exception e) {
-            System.err.println("[Auth] OTP send error: " + e.getMessage());
+            // EMAIL SEND FAILED — expose error so we can diagnose
+            System.err.println("[Auth] OTP send FAILED: " + e.getMessage());
+            return ResponseEntity.status(500).body(Map.of(
+                    "message", "Failed to send OTP email. Please try again later.",
+                    "error",   e.getMessage()   // <-- remove this line in production once fixed
+            ));
         }
-        // Always return 200 (security: don't reveal if email exists)
-        return ResponseEntity.ok(Map.of(
-                "message",
-                "If this email is registered, a 6-digit OTP has been sent. Check your inbox."));
     }
 
     // ── RESET PASSWORD — Step 2: verify OTP + set new password ───────────────

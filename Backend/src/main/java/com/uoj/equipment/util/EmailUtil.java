@@ -1,50 +1,74 @@
 package com.uoj.equipment.util;
 
-import jakarta.mail.MessagingException;
-import jakarta.mail.internet.MimeMessage;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.MailException;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
 @Component
 public class EmailUtil {
 
-    private final JavaMailSender mailSender;
+    @Value("${brevo.api.key}")
+    private String brevoApiKey;
 
-    @Value("${spring.mail.username}")
+    @Value("${app.mail.from}")
     private String fromEmail;
 
-    public EmailUtil(JavaMailSender mailSender) {
-        this.mailSender = mailSender;
-    }
+    @Value("${app.mail.from-name:ERMS}")
+    private String fromName;
 
-
-     //Sends a simple HTML email.
+    private final HttpClient httpClient = HttpClient.newHttpClient();
 
     public void sendHtmlEmail(String to, String subject, String htmlBody) {
         try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            String json = "{"
+                    + "\"sender\":{\"name\":\"" + escapeJson(fromName) + "\",\"email\":\"" + escapeJson(fromEmail) + "\"},"
+                    + "\"to\":[{\"email\":\"" + escapeJson(to) + "\"}],"
+                    + "\"subject\":\"" + escapeJson(subject) + "\","
+                    + "\"htmlContent\":\"" + escapeJson(htmlBody) + "\""
+                    + "}";
 
-            helper.setFrom(fromEmail);
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(htmlBody, true);
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("https://api.brevo.com/v3/smtp/email"))
+                    .header("Content-Type", "application/json")
+                    .header("api-key", brevoApiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .build();
 
-            mailSender.send(message);
-        } catch (MessagingException | MailException e) {
+            HttpResponse<String> response = httpClient.send(
+                    request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 201) {
+                throw new RuntimeException(
+                        "Brevo API error " + response.statusCode() + ": " + response.body());
+            }
+
+            System.out.println("[EmailUtil] Email sent to " + to
+                    + " | status=" + response.statusCode());
+
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
             throw new RuntimeException("Failed to send email to: " + to, e);
         }
     }
 
-
-     //Sends plain text email (fallback).
-
     public void sendTextEmail(String to, String subject, String textBody) {
         String html = "<pre style='font-family: Arial, sans-serif;'>" + escapeHtml(textBody) + "</pre>";
         sendHtmlEmail(to, subject, html);
+    }
+
+    private String escapeJson(String text) {
+        if (text == null) return "";
+        return text
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
     private String escapeHtml(String s) {
